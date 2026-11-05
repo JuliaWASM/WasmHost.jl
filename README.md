@@ -34,7 +34,8 @@ designed but untested; see [Hosts](#hosts).
   - **B, import library (requires an upstream change under discussion).** A
     `wasm_fetch.request` import. It needs WasmCodegen to let a program declare an import
     library of its own, `Config(import_libraries = ["wasm_fetch"])`, which is proposed upstream
-    and not merged. It also uses WasmCodegen's staging area of the linear memory
+    in [gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57) and not
+    merged. It also uses WasmCodegen's staging area of the linear memory
     (`Runtime.Staging`) to pass the request and response text. It has been tested only against
     a local WasmCodegen build that has both.
 - **Waiting.** `fetch` is asynchronous, and the adapter waits in one of two ways:

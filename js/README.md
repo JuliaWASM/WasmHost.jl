@@ -4,7 +4,8 @@ The Julia side of WasmFetch is host-agnostic: the overlays and the protocol don'
 runtime they run on. A build only chooses the **transport**:
 - **A, spool:** files of a spool directory over the WASI filesystem.
 - **B, import:** the import library `wasm_fetch`, which needs `Config(import_libraries)`, an
-  upstream WasmCodegen change under discussion.
+  upstream WasmCodegen change under discussion
+  ([gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57)).
 
 Each host has its own adapter here, sharing the host-independent protocol in `common/`.
 
