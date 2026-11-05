@@ -1,15 +1,25 @@
-# End-to-end check: compile test/e2e/prog.jl (plain Downloads calls) with WasmCodegen, run it in
-# Node with the host adapter, and compare its output and downloaded bytes with the same program
-# run natively (Downloads + libcurl), against a local HTTP server (server.mjs).
+# End-to-end checks: compile a program with WasmCodegen, run it in Node with WasmHost's adapter,
+# and compare it with native.
 #
-#   julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|all]
+#   julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|decompress|all]
 #
-# Environment: JULIA (default: this julia), NODE (default: `node` on PATH, Node 22+ with JSPI),
-# WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own [sources]),
-# E2E_REUSE=1 (run modules an earlier run built, without rebuilding them).
+# - spool, import: test/e2e/prog.jl (plain Downloads calls) against a local HTTP server
+#   (server.mjs). Its output and downloaded bytes must equal the same program run natively
+#   (Downloads + libcurl).
+# - decompress: test/e2e/dprog.jl (WasmHost.Decompress and WasmHost.Platform) on a real
+#   artifact tarball, gzip and zstd as the Pkg server serves it (and deflate). The decompressed
+#   bytes must equal what native Pkg's own decompressors give (`get_extract_cmd`: 7z, zstd),
+#   whose tree hash is the artifact's; the platform lines must equal the native run's.
+#
+# Environment: JULIA (default: this julia), NODE (default: `node` on PATH, Node 22+ with JSPI;
+# zstd needs 22.15+), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
+# [sources]), E2E_REUSE=1 (run modules an earlier run built, without rebuilding them),
+# E2E_ARTIFACTS (a directory with ARTIFACT.tar.gz and ARTIFACT.tar.zst, instead of downloading
+# them from pkg.julialang.org).
 # WasmCodegen needs the WASI filesystem and environment for `host = :wasi`; `import` also needs
-# `Config(import_libraries)`.
-using TOML
+# `Config(import_libraries)`, `decompress` the `julia_regex` host extension (for
+# WasmHost.Platform.host_platform).
+using TOML, Downloads, Tar, Pkg
 
 const HERE = @__DIR__
 const ROOT = dirname(dirname(HERE))
@@ -19,12 +29,15 @@ julia = get(ENV, "JULIA", joinpath(Sys.BINDIR, Base.julia_exename()))
 node = get(ENV, "NODE", something(Sys.which("node"), "node"))
 work = mkpath(joinpath(HERE, "work"))
 
-# the environment: WasmCodegen, its WasmBuilder and IRStructurizer, WasmFetch, Downloads
+# a real artifact (Bzip2_jll's binaries for aarch64-linux-gnu; any artifact works): its tree hash
+const ARTIFACT = "ffd5a7f2f7b63ef413accafeaaea298c49d4d2af"
+
+# the environment: WasmCodegen, its WasmBuilder and IRStructurizer, WasmHost, Downloads
 function setup_env(dir)
     wp = TOML.parsefile(joinpath(wcg, "Project.toml"))
-    deps = Dict("WasmCodegen" => wp["uuid"], "WasmFetch" => TOML.parsefile(joinpath(ROOT, "Project.toml"))["uuid"],
+    deps = Dict("WasmCodegen" => wp["uuid"], "WasmHost" => TOML.parsefile(joinpath(ROOT, "Project.toml"))["uuid"],
                 "Downloads" => "f43a241f-c20a-4ad4-852c-f6b1247861c6")
-    sources = Dict{String,Any}("WasmCodegen" => Dict("path" => wcg), "WasmFetch" => Dict("path" => ROOT))
+    sources = Dict{String,Any}("WasmCodegen" => Dict("path" => wcg), "WasmHost" => Dict("path" => ROOT))
     for (name, var) in (("WasmBuilder", "WASMBUILDER"), ("IRStructurizer", "IRSTRUCTURIZER"))
         deps[name] = wp["deps"][name]
         src = haskey(ENV, var) ? Dict("path" => abspath(ENV[var])) : copy(wp["sources"][name])
@@ -32,12 +45,14 @@ function setup_env(dir)
         sources[name] = src
     end
     mkpath(dir)
+    # (a fresh resolve: an earlier run's manifest may point at another WasmCodegen)
+    rm(joinpath(dir, "Manifest.toml"); force = true)
     open(io -> TOML.print(io, Dict("deps" => deps, "sources" => sources); sorted = true), joinpath(dir, "Project.toml"), "w")
     run(`$julia --startup-file=no --project=$dir -e "using Pkg; Pkg.instantiate()"`)
     return dir
 end
 
-tlines(s) = filter(l -> startswith(l, "T"), split(s, '\n'))
+lines(s, prefix) = filter(l -> startswith(l, prefix), split(s, '\n'))
 
 # the output of `cmd`, stdout and stderr together
 function output(cmd)
@@ -49,22 +64,84 @@ function output(cmd)
     return out
 end
 
-env = setup_env(joinpath(work, "env"))
-native = read(addenv(`$node $(joinpath(HERE, "native.mjs")) $(joinpath(work, "native"))`,
-                     "JULIA" => julia, "E2E_PROJECT" => env), String)
-print("native:\n", native)
-ok = !isempty(tlines(native))
-for transport in (which == "all" ? ["spool", "import"] : [which])
+const NODE_FLAGS = `--experimental-wasm-jspi --disable-warning=ExperimentalWarning`
+
+function build(env, wasm, transport, program)
+    get(ENV, "E2E_REUSE", "") == "1" && isfile(wasm) && return
+    run(`$julia --startup-file=no --project=$env $(joinpath(HERE, "build.jl")) $wasm $transport $program`)
+end
+
+function downloads(env, transport)
+    native = read(addenv(`$node $(joinpath(HERE, "native.mjs")) $(joinpath(work, "native"))`,
+                         "JULIA" => julia, "E2E_PROJECT" => env), String)
+    print("native:\n", native)
+    ok = !isempty(lines(native, "T"))
     wasm = joinpath(work, "fetch-$transport.wasm")
-    # (E2E_REUSE=1: a module already built by an earlier run is run again, not rebuilt)
-    get(ENV, "E2E_REUSE", "") == "1" && isfile(wasm) ||
-        run(`$julia --startup-file=no --project=$env $(joinpath(HERE, "build.jl")) $wasm $transport`)
+    build(env, wasm, transport, "fetch")
     for mode in (transport == "import" ? ["import"] : ["jspi", "sync"])
-        out = output(`$node --experimental-wasm-jspi --disable-warning=ExperimentalWarning $(joinpath(HERE, "run.mjs")) $wasm $mode $(joinpath(work, mode))`)
-        same = tlines(out) == tlines(native) && occursin("identical to the server's: true", out) && occursin("spool files left: 0", out)
+        out = output(`$node $NODE_FLAGS $(joinpath(HERE, "run.mjs")) $wasm $mode $(joinpath(work, mode))`)
+        same = lines(out, "T") == lines(native, "T") && occursin("identical to the server's: true", out) &&
+               occursin("spool files left: 0", out)
         println("== $transport/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
-        global ok &= same
+        ok &= same
     end
+    return ok
+end
+
+# the compressed artifact, both encodings of the Pkg server
+function artifacts()
+    dir = mkpath(get(ENV, "E2E_ARTIFACTS", joinpath(work, "artifacts")))
+    for (ext, accept) in (("gz", "gzip"), ("zst", "zstd, gzip"))
+        f = joinpath(dir, "$ARTIFACT.tar.$ext")
+        isfile(f) || Downloads.download("https://pkg.julialang.org/artifact/$ARTIFACT", f;
+                                        headers = ["Accept-Encoding" => accept])
+    end
+    return dir
+end
+
+function decompression(env)
+    src = artifacts()
+    gz, zst = joinpath(src, "$ARTIFACT.tar.gz"), joinpath(src, "$ARTIFACT.tar.zst")
+    # natively: Pkg's own decompressors (7z for gzip, zstd for zstd), checked by the tree hash
+    fmts = (Pkg.PlatformEngines.detect_archive_format(gz), Pkg.PlatformEngines.detect_archive_format(zst))
+    ref = read(Pkg.PlatformEngines.get_extract_cmd(gz))
+    ok = fmts == ("gzip", "zstd") && read(Pkg.PlatformEngines.get_extract_cmd(zst)) == ref &&
+         Tar.tree_hash(IOBuffer(ref)) == ARTIFACT
+    println("native: formats $fmts; Pkg's decompressors agree, tree hash ", ARTIFACT, ": ", ok, "; ", length(ref), " bytes")
+    indir = mkpath(joinpath(work, "dinput"))
+    cp(gz, joinpath(indir, "artifact.tar.gz"); force = true)
+    cp(zst, joinpath(indir, "artifact.tar.zst"); force = true)
+    # (deflate, the zlib format: made from the native tar by node:zlib)
+    write(joinpath(indir, "artifact.tar"), ref)
+    run(`$node -e "const z=require('node:zlib'),fs=require('node:fs');fs.writeFileSync(process.argv[2],z.deflateSync(fs.readFileSync(process.argv[1])))" $(joinpath(indir, "artifact.tar")) $(joinpath(indir, "artifact.tar.zz"))`)
+    rm(joinpath(indir, "artifact.tar"))
+    # the platform tags both runs get
+    platform = read(`$node --input-type=module -e "import { platformEnv } from $(repr("file://" * joinpath(ROOT, "js", "node", "platform.mjs"))); process.stdout.write(platformEnv({ cuda: 'none' }).WASMHOST_PLATFORM)"`, String)
+    pnative = read(addenv(`$julia --startup-file=no --project=$env -e "include($(repr(joinpath(HERE, "dprog.jl")))); DecompressProg.platform_main()"`,
+                          "WASMHOST_PLATFORM" => platform, "E2E_OLD_PLATFORM" => "arch=i686;os=windows"), String)
+    print("native platform lines:\n", pnative)
+    n = length(ref)
+    want = ["D1 gzip ok true $n", "D2 zstd ok true $n", "D3 deflate ok true $n", "D4 gzip-explicit ok true $n",
+            "D5 wrong-format DecompressError errno=25 no dst", "D6 not-compressed DecompressError errno=25 no dst",
+            "D7 missing DecompressError errno=44 no dst"]
+    wasm = joinpath(work, "decompress-spool.wasm")
+    build(env, wasm, "spool", "decompress")
+    for mode in ["jspi", "sync"]
+        dir = joinpath(work, "d-$mode")
+        out = output(addenv(`$node $NODE_FLAGS $(joinpath(HERE, "drun.mjs")) $wasm $mode $dir $indir $wcg`, "E2E_PLATFORM" => platform))
+        bytes = [f => (isfile(joinpath(dir, "out", f)) && read(joinpath(dir, "out", f)) == ref) for f in ("gz.tar", "zst.tar", "zz.tar", "gz2.tar")]
+        same = lines(out, "D") == want && all(last, bytes) && lines(out, "P") == lines(pnative, "P") &&
+               occursin("spool files left: 0", out)
+        println("== decompress/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "; bytes equal to native: ", bytes, "\n", out)
+        ok &= same
+    end
+    return ok
+end
+
+env = setup_env(joinpath(work, "env"))
+ok = true
+for part in (which == "all" ? ["spool", "import", "decompress"] : [which])
+    global ok &= part == "decompress" ? decompression(env) : downloads(env, part)
 end
 println(ok ? "E2E PASS" : "E2E FAIL")
 exit(ok ? 0 : 1)

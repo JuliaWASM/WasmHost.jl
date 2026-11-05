@@ -6,28 +6,31 @@
 #
 # `Runtime.WASM_METHODS` is WasmCodegen's internal API today (it is how its own runtime replaces
 # methods); this extension relies on it.
-module WasmFetchDownloadsExt
+module WasmHostDownloadsExt
 
-using WasmFetch
+using WasmHost
 using Downloads
 using Downloads: Response, RequestError
 import WasmCodegen
 
-## the import transport (`WasmFetch.transport() === :import`)
+# (the host side of the requests: `WasmHost.Downloads`, not the stdlib)
+const Host = WasmHost.Downloads
 
-# `wasm_fetch.request(req, req_len, res, res_cap) -> len` with buffers in WasmCodegen's staging
-# area of the linear memory (`Runtime.Staging`, also internal); needs
-# `Config(import_libraries = ["wasm_fetch"])`
+## the import transport (`WasmHost.transport() === :import`)
+
+# `wasm_host.http_request(req, req_len, res, res_cap) -> len` with buffers in WasmCodegen's
+# staging area of the linear memory (`Runtime.Staging`, also internal); needs
+# `Config(import_libraries = ["wasm_host"])`
 const Staging = WasmCodegen.Runtime.Staging
 const RESPONSE_CAP = 1 << 16
 
-function WasmFetch.request_import(text::String)::Union{Nothing,String}
+function Host.request_import(text::String)::Union{Nothing,String}
     return Staging.with_scope() do
         n = sizeof(text)
         req = Staging.alloc_data(n; align = 1)
         Staging.copy_to_linear!(req, text, 1, n)
         res = Staging.alloc_data(RESPONSE_CAP; align = 1)
-        len = ccall((:request, "wasm_fetch"), Int32, (UInt32, UInt32, UInt32, UInt32),
+        len = ccall((:http_request, "wasm_host"), Int32, (UInt32, UInt32, UInt32, UInt32),
                     req, UInt32(n), res, UInt32(RESPONSE_CAP))
         len < 0 && return nothing
         buf = Vector{UInt8}(undef, len)
@@ -47,7 +50,7 @@ header_pairs(headers) = Pair{String,String}[String(k) => String(v) for (k, v) in
 input_path(::Nothing) = ("", false)
 input_path(path::AbstractString) = (String(abspath(path)), false)
 function input_path(io::IO)
-    p = WasmFetch.spool_path(".in")
+    p = WasmHost.spool_path(".in")
     open(f -> write(f, read(io)), p, "w")
     return (p, true)
 end
@@ -55,7 +58,7 @@ end
 # where the host writes the body: a path of the program, or a spool file copied into the IO
 output_path(::Nothing) = ""
 output_path(path::AbstractString) = String(abspath(path))
-output_path(::IO) = WasmFetch.spool_path(".out")
+output_path(::IO) = WasmHost.spool_path(".out")
 
 # the body into the output (for an IO), and its size in bytes
 copy_body!(::Nothing, ::String) = 0
@@ -99,10 +102,10 @@ function wasm_request(url::String, input, output, method, headers, timeout::Floa
     any(kv -> lowercase(kv[1]) == "user-agent", hdrs) || push!(hdrs, "User-Agent" => USER_AGENT)
     inp, in_tmp = input_path(input)
     out = output_path(output)
-    local r::WasmFetch.Result
+    local r::Host.Result
     nbytes = 0
     try
-        r = WasmFetch.request(url, meth, hdrs, inp, out, timeout)
+        r = Host.request(url, meth, hdrs, inp, out, timeout)
         r.code == 0 && (nbytes = copy_body!(output, out))
     finally
         in_tmp && rm(inp; force = true)

@@ -1,18 +1,48 @@
 # Host adapters
 
-The Julia side of WasmFetch is host-agnostic: the overlays and the protocol don't know which
-runtime they run on. A build only chooses the **transport**:
-- **A, spool:** files of a spool directory over the WASI filesystem.
-- **B, import:** the import library `wasm_fetch`, which needs `Config(import_libraries)`, an
+The Julia side of WasmHost is host-agnostic: its modules and the protocols don't know which
+runtime they run on. A build only chooses the **transport** of its downloads:
+- **spool:** files of a spool directory over the WASI filesystem. Decompression always uses it.
+- **import:** the import library `wasm_host`, which needs `Config(import_libraries)`, an
   upstream WasmCodegen change under discussion
   ([gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57)).
 
-Each host has its own adapter here, sharing the host-independent protocol in `common/`.
+There is one adapter per host family, laid out as a future npm package with its own
+`package.json` (`"private": true`: nothing is published yet). They share the host-independent
+code in `common/`.
 
-| Directory | Host | Transports | Waiting | Status |
-|---|---|---|---|---|
-| `common/` | any | – | – | the protocol (parse a request, format a response) and libcurl's error codes; no host API |
-| `node/` | Node 22+ (`node:wasi`) | A: `spool.mjs`; B: `imports.mjs` | JSPI (A, B); sync worker + `Atomics.wait` (A) | **tested** (end to end, output identical to native Downloads) |
-| `browser/` | browsers | B planned; A only on a JavaScript WASI filesystem | JSPI where available; a sync worker only with cross-origin isolation | design notes, **not implemented, untested** |
-| `workerd/` | Cloudflare workerd | B | JSPI if available | notes, untested |
-| `wasmtime/` | wasmtime | B from an embedding | the embedding's | notes, untested |
+| Directory | Future package | Host | Downloads | Decompression | Platform tags | Waiting | Tested? |
+|---|---|---|---|---|---|---|---|
+| `common/` | (bundled into each) | any | protocol `wasm-fetch 1`, libcurl's error codes | protocol `wasm-decompress 1`, magic bytes | merging, checking, `WASMHOST_PLATFORM` | – | through Node |
+| `node/` | `@wasmhost/node` | Node 22+ (`node:wasi`) | spool: `spool.mjs`; import: `imports.mjs` | spool: gzip, deflate; zstd on Node ≥ 22.15 (`node:zlib`) | `platform.mjs` (arch, os, libc) | JSPI; sync worker + `Atomics.wait` (spool) | **yes**, end to end against native |
+| `browser/` | `@wasmhost/browser` | browsers | import planned; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd (planned) | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **no**: design notes, not written |
+| `workerd/` | – | Cloudflare workerd | import | `DecompressionStream` | – | JSPI if available | **no**: notes |
+| `wasmtime/` | – | wasmtime | import, from an embedding | the embedding's | the embedding's | the embedding's | **no**: notes |
+
+**Before publishing:** `node/` imports `../common/` by relative path, so that the repository
+works without an install step. A publish bundles `common/` into each package (or publishes it
+as a package of its own). Publish only once a second host is tested; until then, use `js/` from
+the repository.
+
+## Node (`@wasmhost/node`)
+
+```js
+import { WASI } from 'node:wasi';
+import { wrapWasi, platformEnv } from './WasmHost.jl/js/node/index.mjs';
+
+const work = '/abs/work';                           // preopened at the same path
+const spool = `${work}/.wasmhost`;
+const wasi = new WASI({ version: 'preview1', preopens: { [work]: work },
+                        env: { WASMHOST_SPOOL: spool, PWD: work, ...platformEnv() } });
+const host = wrapWasi(wasi.wasiImport, { preopens: { [work]: work }, spool, mode: 'jspi' });
+const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: host.wasiImport });
+host.bindMemory(inst.exports.memory);
+wasi.initialize(inst);
+await WebAssembly.promising(inst.exports.main)();   // mode 'sync': inst.exports.main()
+```
+
+- `wrapWasi` serves downloads (`.res`) and decompression (`.dres`) from one `path_open`
+  wrapper: a `WebAssembly.Suspending` can't be wrapped twice.
+- `platformEnv(overrides)` is `{ WASMHOST_PLATFORM: "arch=…;os=…;libc=…" }`, the detected tags
+  with `overrides` (an object) applied key by key.
+- `makeImports({ preopens })` is the import transport's `{ wasm_host: { http_request } }`.

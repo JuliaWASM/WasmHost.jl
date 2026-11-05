@@ -19,7 +19,7 @@ function main()::Int32
     say("T2 ", p == dest, " ", filesize(p))
     # 3. request: a redirect, a custom header, the response's fields
     buf = IOBuffer()
-    r = Downloads.request(base() * "/redirect"; output = buf, headers = ["X-Probe" => "wasm-fetch"])
+    r = Downloads.request(base() * "/redirect"; output = buf, headers = ["X-Probe" => "wasmhost"])
     if r isa Downloads.Response
         say("T3 ", r.proto === nothing ? "-" : r.proto, " ", r.status, " ", clean(r.url), " [", r.message, "] ",
             hdr(r, "content-type"), " ", hdr(r, "x-served-by"))

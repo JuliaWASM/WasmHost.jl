@@ -1,5 +1,5 @@
-// The protocol of WasmFetch (version 1, see src/WasmFetch.jl) and libcurl's error codes: the
-// host-independent part of every adapter. No Node or browser API is used here.
+// The protocol of WasmHost's downloads ("wasm-fetch 1", see src/downloads.jl) and libcurl's
+// error codes: the host-independent part of every adapter. No Node or browser API is used here.
 
 export const PROTOCOL = 'wasm-fetch 1';
 

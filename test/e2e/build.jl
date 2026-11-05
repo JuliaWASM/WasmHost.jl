@@ -1,18 +1,28 @@
-# julia --project=ENV build.jl OUT.wasm [spool|import] : compile prog.jl's FetchProg.main for WASI
-using WasmCodegen, Downloads, WasmFetch
-Base.get_extension(WasmFetch, :WasmFetchDownloadsExt) === nothing && error("WasmFetchDownloadsExt is not loaded")
-include(joinpath(@__DIR__, "prog.jl"))
+# julia --project=ENV build.jl OUT.wasm [spool|import] [fetch|decompress]
+# Compile an e2e program for WASI: prog.jl's FetchProg.main (fetch) or dprog.jl's
+# DecompressProg.main (decompress).
+using WasmCodegen, Downloads, WasmHost
+Base.get_extension(WasmHost, :WasmHostDownloadsExt) === nothing && error("WasmHostDownloadsExt is not loaded")
 out = ARGS[1]
 transport = get(ARGS, 2, "spool")
+program = get(ARGS, 3, "fetch")
+entry = if program == "fetch"
+    include(joinpath(@__DIR__, "prog.jl")); FetchProg.main
+else
+    include(joinpath(@__DIR__, "dprog.jl")); DecompressProg.main
+end
 kw = (;)
 if transport == "import"
     # (needs a WasmCodegen with Config(import_libraries))
-    @eval WasmFetch transport() = :import
-    kw = (; import_libraries = ["wasm_fetch"])
+    @eval WasmHost transport() = :import
+    kw = (; import_libraries = ["wasm_host"])
 end
+# (WasmHost.Platform.host_platform builds a BinaryPlatforms.Platform, whose constructor can parse
+# version tags with a Regex: the host's regex engine, WasmCodegen's `julia_regex`)
+program == "decompress" && (kw = (; kw..., host_extensions = [:julia_regex]))
 cfg = WasmCodegen.Config(; host = :wasi, trim = :safe, on_unsupported = :error, verify = :warn, kw...)
 t = time()
-c = WasmCodegen.compile([WasmCodegen.Entry(FetchProg.main, (); name = "main")]; config = cfg)
-println("compiled ($(transport)) in ", round(time() - t; digits = 1), " s: ", length(c.bytes), " bytes, ",
+c = WasmCodegen.compile([WasmCodegen.Entry(entry, (); name = "main")]; config = cfg)
+println("compiled ($program, $transport) in ", round(time() - t; digits = 1), " s: ", length(c.bytes), " bytes, ",
         length(c.cgm.diagnostics), " diagnostics")
 write(out, c.bytes)

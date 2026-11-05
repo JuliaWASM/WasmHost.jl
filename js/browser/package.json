@@ -1,0 +1,15 @@
+{
+  "name": "@wasmhost/browser",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser adapter of WasmHost.jl: a design, not written yet (see README.md). Not published.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {},
+  "wasmhost": {
+    "transports": ["import"],
+    "waiting": ["jspi"],
+    "capabilities": { "downloads": "planned", "decompress": "planned: gzip, deflate (DecompressionStream); no zstd", "platform": "none" },
+    "tested": false
+  }
+}
