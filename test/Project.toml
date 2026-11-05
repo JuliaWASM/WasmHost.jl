@@ -1,0 +1,6 @@
+[deps]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+WasmFetch = "6a1f3c2e-8d4b-4f7e-9b2a-5c3e1d7f9a40"
+
+[sources]
+WasmFetch = {path = "../"}
