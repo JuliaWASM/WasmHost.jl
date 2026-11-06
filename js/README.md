@@ -14,7 +14,7 @@ code in `common/`.
 | Directory | Future package | Host | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|---|
 | `common/` | (bundled into each) | any | protocol `wasm-fetch 1`, libcurl's error codes | protocol `wasm-decompress 1`, magic bytes | merging, checking, `WASMHOST_PLATFORM` | – | through Node |
-| `node/` | `@wasmhost/node` | Node 22+ (`node:wasi`) | spool: `spool.mjs`; import: `imports.mjs` | spool: gzip, deflate; zstd on Node ≥ 22.15 (`node:zlib`) | `platform.mjs` (arch, os, libc) | JSPI; sync worker + `Atomics.wait` (spool) | **yes**, end to end against native |
+| `node/` | `@wasmhost/node` | Node 22+ and Bun 1.4+ (`node:wasi`) | spool: `spool.mjs`; import: `imports.mjs` | spool: gzip, deflate; zstd on Node ≥ 22.15 (`node:zlib`) | `platform.mjs` (arch, os, libc) | JSPI; sync worker + `Atomics.wait` (spool) | **yes**, end to end against native |
 | `browser/` | `@wasmhost/browser` | browsers | import planned; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd (planned) | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **no**: design notes, not written |
 | `workerd/` | – | Cloudflare workerd | import | `DecompressionStream` | – | JSPI if available | **no**: notes |
 | `wasmtime/` | – | wasmtime | import, from an embedding | the embedding's | the embedding's | the embedding's | **no**: notes |
@@ -28,7 +28,7 @@ the repository.
 
 ```js
 import { WASI } from 'node:wasi';
-import { wrapWasi, platformEnv } from './WasmHost.jl/js/node/index.mjs';
+import { wrapWasi, platformEnv, wasiInitialize } from './WasmHost.jl/js/node/index.mjs';
 
 const work = '/abs/work';                           // preopened at the same path
 const spool = `${work}/.wasmhost`;
@@ -37,9 +37,14 @@ const wasi = new WASI({ version: 'preview1', preopens: { [work]: work },
 const host = wrapWasi(wasi.wasiImport, { preopens: { [work]: work }, spool, mode: 'jspi' });
 const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: host.wasiImport });
 host.bindMemory(inst.exports.memory);
-wasi.initialize(inst);
+wasiInitialize(wasi, inst);                         // wasi.initialize(inst) on Node; Bun's node:wasi has none
 await WebAssembly.promising(inst.exports.main)();   // mode 'sync': inst.exports.main()
 ```
+
+- **Bun:** the same adapter runs in Bun 1.4 (JavaScriptCore). Its `node:wasi` has `wasiImport` but no
+  `getImportObject()` or `initialize()`; `wasiImportObject(wasi)` and `wasiInitialize(wasi, instance)` (`wasi.mjs`)
+  work in both. JSPI is on by default in Bun 1.4; `jspiGap()` names it where an engine lacks it. The tests take
+  `WASM_RUNTIME=node|bun` (`test/runtests.jl`, `test/e2e/e2e.jl`).
 
 - `wrapWasi` serves downloads (`.res`) and decompression (`.dres`) from one `path_open`
   wrapper: a `WebAssembly.Suspending` can't be wrapped twice.
