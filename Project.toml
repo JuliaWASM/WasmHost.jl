@@ -5,12 +5,16 @@ authors = ["WasmHost.jl contributors"]
 
 [weakdeps]
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 WasmCodegen = "5b0f1d7e-3c2a-4e8b-9a61-7d2f4c8e1a93"
 
 [extensions]
 WasmHostDownloadsExt = ["Downloads", "WasmCodegen"]
+WasmHostPkgExt = ["Pkg", "WasmCodegen"]
+WasmHostPlatformExt = "WasmCodegen"
 
 [compat]
 Downloads = "1.6"
+Pkg = "1.12"
 WasmCodegen = "0.1"
 julia = "1.12, 1.13"
