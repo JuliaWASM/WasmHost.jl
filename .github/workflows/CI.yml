@@ -5,17 +5,75 @@ on:
   pull_request:
 jobs:
   test:
+    name: Julia ${{ matrix.julia-version }}, ${{ matrix.runtime }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         julia-version: ['1.12', '1.13']
+        # the JavaScript adapter's tests (test/runtests.jl) in Node and in Bun: WASM_RUNTIME
+        runtime: [node, bun]
+    env:
+      WASM_RUNTIME: ${{ matrix.runtime }}
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.julia-version }}
-      - uses: actions/setup-node@v4
+      - if: matrix.runtime == 'node'
+        uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: for f in js/common/*.mjs js/node/*.mjs; do node --check "$f"; done
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: The adapter's modules load (${{ matrix.runtime }})
+        run: |
+          if [ "${{ matrix.runtime }}" = node ]; then
+            for f in js/common/*.mjs js/node/*.mjs; do node --check "$f"; done
+          else
+            for f in js/common/*.mjs js/node/*.mjs; do bun -e "await import('$PWD/$f')" || exit 1; done
+          fi
       - uses: julia-actions/julia-runtest@v1
+
+  # End to end (test/e2e/e2e.jl): programs compiled by WasmCodegen (wasm-opt -O3, its default), run with the adapter
+  # in Node and in Bun, compared with the same programs run natively. The decompress part needs WasmCodegen's
+  # julia_regex host extension, which WasmCodegen no longer has: it is not run here (on any runtime).
+  e2e:
+    name: e2e ${{ matrix.part }}, ${{ matrix.runtime }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [spool, import]
+        runtime: [node, bun]
+    env:
+      WASM_RUNTIME: ${{ matrix.runtime }}
+      # (a run skipped for an engine gap fails the job: none is documented for Node 24 or Bun 1.4)
+      E2E_ALLOW_SKIP: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: gbaraldi/WasmCodegen.jl
+          ref: 0034569817c5ddf1b7d1836df38f1b3d6bb00460
+          path: wcg
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.13.2'
+      - uses: julia-actions/cache@v2
+        with:
+          cache-name: e2e-v1
+      # (the e2e's server, native driver and module runner all run in WASM_RUNTIME)
+      - if: matrix.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: e2e ${{ matrix.part }} in ${{ matrix.runtime }}
+        run: julia --startup-file=no test/e2e/e2e.jl wcg ${{ matrix.part }}

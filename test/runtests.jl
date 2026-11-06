@@ -1,4 +1,5 @@
-# Native tests of the protocols and of the JavaScript adapter's parts (no WasmCodegen needed).
+# Native tests of the protocols and of the JavaScript adapter's parts (no WasmCodegen needed), the latter in Node or
+# in Bun (WASM_RUNTIME).
 # The end-to-end checks, which compile programs with WasmCodegen and run them in Node, are in
 # test/e2e/e2e.jl.
 using Test, WasmHost
@@ -9,7 +10,10 @@ using Base.BinaryPlatforms: HostPlatform, triplet, arch, os, libc
 
 const JS = joinpath(dirname(@__DIR__), "js")
 js(path...) = repr("file://" * joinpath(JS, path...))
-const node = Sys.which("node")
+# the JavaScript runtime of the adapter's tests: WASM_RUNTIME=node (the default; NODE) or bun (BUN)
+const runtime = get(ENV, "WASM_RUNTIME", "node")
+runtime in ("node", "bun") || error("WASM_RUNTIME must be node or bun, not $(repr(runtime))")
+const node = something(get(ENV, uppercase(runtime), nothing), Sys.which(runtime), Some(nothing))
 const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
 
 @testset "WasmHost" begin
@@ -134,7 +138,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     # the request as the JavaScript adapter parses it, and its response as Julia parses it
     @testset "JavaScript: downloads protocol round trip" begin
         if node === nothing
-            @test_skip "node not found"
+            @test_skip "$runtime not found"
         else
             req = request_text("http://h/x?a=1", "POST", ["X-Probe" => "v: w"], "/w/in", "/w/out", 3.0)
             script = """
@@ -153,7 +157,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     # the Node adapter's decompression of a request Julia writes, answered as Julia parses it
     @testset "JavaScript: decompression (node:zlib)" begin
         if node === nothing
-            @test_skip "node not found"
+            @test_skip "$runtime not found"
         else
             dir = mktempdir()
             data = repeat(collect(codeunits("WasmHost decompression test data. ")), 3000)
@@ -210,7 +214,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     # the Node adapter's detected tags make the native platform's arch, os and libc
     @testset "JavaScript: platform tags" begin
         if node === nothing
-            @test_skip "node not found"
+            @test_skip "$runtime not found"
         else
             script = """
             import { platformEnv } from $(js("node", "platform.mjs"));

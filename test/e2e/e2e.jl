@@ -11,8 +11,8 @@
 #   bytes must equal what native Pkg's own decompressors give (`get_extract_cmd`: 7z, zstd),
 #   whose tree hash is the artifact's; the platform lines must equal the native run's.
 #
-# Environment: JULIA (default: this julia), NODE (default: `node` on PATH, Node 22+ with JSPI;
-# zstd needs 22.15+), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
+# Environment: JULIA (default: this julia), WASM_RUNTIME (node, the default, or bun), NODE (default: `node` on PATH,
+# Node 22+ with JSPI; zstd needs 22.15+) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
 # [sources]), E2E_REUSE=1 (run modules an earlier run built, without rebuilding them),
 # E2E_ARTIFACTS (a directory with ARTIFACT.tar.gz and ARTIFACT.tar.zst, instead of downloading
 # them from pkg.julialang.org).
@@ -26,7 +26,10 @@ const ROOT = dirname(dirname(HERE))
 wcg = abspath(ARGS[1])
 which = get(ARGS, 2, "spool")
 julia = get(ENV, "JULIA", joinpath(Sys.BINDIR, Base.julia_exename()))
-node = get(ENV, "NODE", something(Sys.which("node"), "node"))
+# the JavaScript runtime: WASM_RUNTIME=node (the default; NODE) or bun (BUN)
+runtime = get(ENV, "WASM_RUNTIME", "node")
+runtime in ("node", "bun") || error("WASM_RUNTIME must be node or bun, not $(repr(runtime))")
+node = get(ENV, uppercase(runtime), something(Sys.which(runtime), runtime))
 work = mkpath(joinpath(HERE, "work"))
 
 # a real artifact (Bzip2_jll's binaries for aarch64-linux-gnu; any artifact works): its tree hash
@@ -54,6 +57,15 @@ end
 
 lines(s, prefix) = filter(l -> startswith(l, prefix), split(s, '\n'))
 
+# a run the runner skipped (an engine gap it names: `SKIP: …`), reported as such; with E2E_ALLOW_SKIP=0, a failure
+function skipped(out, what)
+    m = match(r"^SKIP: (.*)$"m, out)
+    m === nothing && return false
+    println("== $what: SKIPPED on $runtime, an engine gap: ", m[1])
+    get(ENV, "E2E_ALLOW_SKIP", "1") == "1" || (global ok = false)
+    return true
+end
+
 # the output of `cmd`, stdout and stderr together
 function output(cmd)
     p = Pipe()
@@ -64,7 +76,7 @@ function output(cmd)
     return out
 end
 
-const NODE_FLAGS = `--experimental-wasm-jspi --disable-warning=ExperimentalWarning`
+const NODE_FLAGS = runtime == "node" ? `--experimental-wasm-jspi --disable-warning=ExperimentalWarning` : ``
 
 function build(env, wasm, transport, program)
     get(ENV, "E2E_REUSE", "") == "1" && isfile(wasm) && return
@@ -80,6 +92,7 @@ function downloads(env, transport)
     build(env, wasm, transport, "fetch")
     for mode in (transport == "import" ? ["import"] : ["jspi", "sync"])
         out = output(`$node $NODE_FLAGS $(joinpath(HERE, "run.mjs")) $wasm $mode $(joinpath(work, mode))`)
+        skipped(out, "$transport/$mode") && continue
         same = lines(out, "T") == lines(native, "T") && occursin("identical to the server's: true", out) &&
                occursin("spool files left: 0", out)
         println("== $transport/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
@@ -129,6 +142,7 @@ function decompression(env)
     for mode in ["jspi", "sync"]
         dir = joinpath(work, "d-$mode")
         out = output(addenv(`$node $NODE_FLAGS $(joinpath(HERE, "drun.mjs")) $wasm $mode $dir $indir $wcg`, "E2E_PLATFORM" => platform))
+        skipped(out, "decompress/$mode") && continue
         bytes = [f => (isfile(joinpath(dir, "out", f)) && read(joinpath(dir, "out", f)) == ref) for f in ("gz.tar", "zst.tar", "zz.tar", "gz2.tar")]
         same = lines(out, "D") == want && all(last, bytes) && lines(out, "P") == lines(pnative, "P") &&
                occursin("spool files left: 0", out)
