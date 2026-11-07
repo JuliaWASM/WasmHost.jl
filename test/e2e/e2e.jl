@@ -76,7 +76,11 @@ function output(cmd)
     return out
 end
 
-const NODE_FLAGS = runtime == "node" ? `--experimental-wasm-jspi --disable-warning=ExperimentalWarning` : ``
+# JSPI (WebAssembly.Suspending) is on by default in newer Node, and Node 26 rejects --experimental-wasm-jspi ("bad option"):
+# the flag is passed only where the API is missing without it (Node 22)
+jspi_flags(node) = success(pipeline(`$node -e "process.exit(typeof WebAssembly.Suspending === 'function' ? 0 : 1)"`; stdout = devnull, stderr = devnull)) ?
+                   `` : `--experimental-wasm-jspi`
+const NODE_FLAGS = runtime == "node" ? `$(jspi_flags(node)) --disable-warning=ExperimentalWarning` : ``
 
 function build(env, wasm, transport, program)
     get(ENV, "E2E_REUSE", "") == "1" && isfile(wasm) && return
