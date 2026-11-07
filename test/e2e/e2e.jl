@@ -12,7 +12,7 @@
 #   whose tree hash is the artifact's; the platform lines must equal the native run's.
 #
 # Environment: JULIA (default: this julia), WASM_RUNTIME (node, the default, or bun), NODE (default: `node` on PATH,
-# Node 22+ with JSPI; zstd needs 22.15+) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
+# Node 24+, which has JSPI) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
 # [sources]), E2E_REUSE=1 (run modules an earlier run built, without rebuilding them),
 # E2E_ARTIFACTS (a directory with ARTIFACT.tar.gz and ARTIFACT.tar.zst, instead of downloading
 # them from pkg.julialang.org).
@@ -29,7 +29,8 @@ julia = get(ENV, "JULIA", joinpath(Sys.BINDIR, Base.julia_exename()))
 # the JavaScript runtime: WASM_RUNTIME=node (the default; NODE) or bun (BUN)
 runtime = get(ENV, "WASM_RUNTIME", "node")
 runtime in ("node", "bun") || error("WASM_RUNTIME must be node or bun, not $(repr(runtime))")
-node = get(ENV, uppercase(runtime), something(Sys.which(runtime), runtime))
+node = something(get(ENV, uppercase(runtime), nothing), Sys.which(runtime), Some(nothing))
+node === nothing && error("$runtime is not on PATH: install it (Node 24+ or Bun) or set $(uppercase(runtime)) to its path")
 work = mkpath(joinpath(HERE, "work"))
 
 # a real artifact (Bzip2_jll's binaries for aarch64-linux-gnu; any artifact works): its tree hash
@@ -76,11 +77,8 @@ function output(cmd)
     return out
 end
 
-# JSPI (WebAssembly.Suspending) is on by default in newer Node, and Node 26 rejects --experimental-wasm-jspi ("bad option"):
-# the flag is passed only where the API is missing without it (Node 22)
-jspi_flags(node) = success(pipeline(`$node -e "process.exit(typeof WebAssembly.Suspending === 'function' ? 0 : 1)"`; stdout = devnull, stderr = devnull)) ?
-                   `` : `--experimental-wasm-jspi`
-const NODE_FLAGS = runtime == "node" ? `$(jspi_flags(node)) --disable-warning=ExperimentalWarning` : ``
+# (JSPI needs no flag: it is on by default in Node 24+, and Node 26 rejects --experimental-wasm-jspi as a "bad option")
+const NODE_FLAGS = runtime == "node" ? `--disable-warning=ExperimentalWarning` : ``
 
 function build(env, wasm, transport, program)
     get(ENV, "E2E_REUSE", "") == "1" && isfile(wasm) && return

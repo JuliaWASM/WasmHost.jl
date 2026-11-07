@@ -13,7 +13,7 @@ jobs:
         julia-version: ['1.12', '1.13']
         # the JavaScript adapter's tests (test/runtests.jl) in Node and in Bun: WASM_RUNTIME
         runtime: [node, bun]
-        # (the Node versions: Node 26 has JSPI on and rejects --experimental-wasm-jspi; the axis means nothing to Bun)
+        # (the Node versions: 24 is the minimum, JSPI on without a flag; the axis means nothing to Bun)
         node-version: ['24', '26']
         exclude:
           - runtime: bun
