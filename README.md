@@ -88,14 +88,13 @@ WasmHost.Decompress.decompress(src, dst; format = :auto)   # -> abspath(dst)
 - **Formats:** `:auto` recognizes gzip and zstd by their magic bytes, as Pkg's
   `detect_archive_format` does; `:gzip`, `:deflate` (the zlib format, RFC 1950) and `:zstd`
   name one.
-- **Hosts:** gzip and deflate on every host with an adapter; zstd where the host has it (Node
-  22.15 or newer).
+- **Hosts:** gzip and deflate on every host with an adapter; zstd where the host has it.
 - **Errors:** a `DecompressError(errno, message)` with a WASI errno:
   - `EILSEQ` (25): the data isn't of the format, or of no format `:auto` knows;
   - `EIO` (29): corrupt data or an I/O error;
   - `ENOENT` (44): no source file;
   - `ENOSYS` (52): no host adapter (natively, too), or no decompressor for the format (bzip2,
-    xz and lz4 by magic bytes; zstd on an older Node).
+    xz and lz4 by magic bytes; zstd on a host without it).
 
   `dst` doesn't exist after a failure.
 - **Transport:** always the spool directory, also in a build whose downloads use the import
@@ -144,11 +143,10 @@ WasmHost.Platform.host_platform()   # a Base.BinaryPlatforms.Platform, as HostPl
 - Julia 1.12 or 1.13.
 - A WasmCodegen with WASI support for `Config(host = :wasi)`: the filesystem and the
   environment (`ENV`). Upstream `main` has both.
-- Node 24 or newer for the Node adapter, or Bun.
-  The `jspi` mode needs JavaScript Promise Integration (`WebAssembly.Suspending` and
-  `WebAssembly.promising`), which Node 24 and 26 have without a flag; Node 26 rejects
-  `--experimental-wasm-jspi` ("bad option"). Node 22's V8 (12.4) has only the older JSPI API
-  behind that flag, which the adapter doesn't use.
+- Node 24 or newer for the Node adapter, or Bun. The `jspi` mode needs JavaScript Promise
+  Integration (`WebAssembly.Suspending` and `WebAssembly.promising`), which Node 24 and later
+  have without a flag. (Node 22 has only the older JSPI API, behind a flag the adapter
+  doesn't use, and Node 26 rejects the flag: don't pass it.)
 
 ## Building
 
@@ -171,7 +169,8 @@ that has
 it, the verifier checked the code native inference produces, which inlines Downloads' own
 `request(url)` before the overlay table is consulted, and reported errors in native code
 (libcurl's) that the module never compiles; there, use `verify = :warn`. (The end-to-end
-test's `fetch` program, spool transport, compiles with `verify = :error` and `trim = :safe`.)
+test builds its `fetch` program with `verify = :error`, in both transports; its `decompress`
+program, which isn't built in CI, still uses `:warn`.)
 
 **The import transport:** also define `WasmHost.transport() = :import` before compiling, and
 pass `import_libraries = ["wasm_host"]` to `Config`. `transport` is a function rather than a
@@ -209,7 +208,7 @@ protocols in `js/common/`. See [`js/README.md`](js/README.md).
 
 | Host | Future package | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|
-| **Node** 24+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate; zstd on 22.15+ | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
+| **Node** 24+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
 | **Browsers** | `@wasmhost/browser` (`js/browser/`, not written) | import intended; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **No.** Design notes only: not supported until something has run in a browser |
 | **workerd** | – | import fits; no filesystem | `DecompressionStream` | – | JSPI, if available | **No** (`js/workerd/`) |
 | **wasmtime** | – | CLI: no (needs a helper process and polling); import from an embedding | the embedding's | the embedding's | the embedding's | **No** (`js/wasmtime/`) |

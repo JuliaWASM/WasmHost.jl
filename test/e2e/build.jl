@@ -20,7 +20,8 @@ end
 # (WasmHost.Platform.host_platform builds a BinaryPlatforms.Platform, whose constructor can parse
 # version tags with a Regex: the host's regex engine, WasmCodegen's `julia_regex`)
 program == "decompress" && (kw = (; kw..., host_extensions = [:julia_regex]))
-cfg = WasmCodegen.Config(; host = :wasi, trim = :safe, on_unsupported = :error, verify = :warn, kw...)
+# (the fetch program, in both transports, is built with the trim verifier as an error; decompress needs the removed julia_regex)
+cfg = WasmCodegen.Config(; host = :wasi, trim = :safe, on_unsupported = :error, verify = program == "fetch" ? :error : :warn, kw...)
 t = time()
 c = WasmCodegen.compile([WasmCodegen.Entry(entry, (); name = "main")]; config = cfg)
 println("compiled ($program, $transport) in ", round(time() - t; digits = 1), " s: ", length(c.bytes), " bytes, ",
