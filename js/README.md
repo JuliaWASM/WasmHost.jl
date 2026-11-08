@@ -7,6 +7,10 @@ runtime they run on. A build only chooses the **transport** of its downloads:
   upstream WasmCodegen change under discussion
   ([gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57)).
 
+Page messages (`WasmHost.Page`, the import library `wasm_host_page`) need neither: only the
+module's memory. Their host side is `common/page.mjs` (`makePage`), the same for every host,
+which `node/page.mjs` and `browser/page.mjs` re-export.
+
 There is one adapter per host family, laid out as a future npm package with its own
 `package.json` (`"private": true`: nothing is published yet). They share the host-independent
 code in `common/`.

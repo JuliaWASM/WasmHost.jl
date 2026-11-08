@@ -10,12 +10,13 @@
     ".": "./index.mjs",
     "./spool": "./spool.mjs",
     "./imports": "./imports.mjs",
-    "./platform": "./platform.mjs"
+    "./platform": "./platform.mjs",
+    "./page": "./page.mjs"
   },
   "wasmhost": {
     "transports": ["spool", "import"],
     "waiting": ["jspi", "sync"],
-    "capabilities": { "downloads": "spool, import", "decompress": "spool: gzip, deflate; zstd on Node >= 22.15", "platform": "WASI env" },
+    "capabilities": { "downloads": "spool, import", "decompress": "spool: gzip, deflate; zstd on Node >= 22.15", "platform": "WASI env", "page": "wasm_host_page" },
     "tested": true
   }
 }
