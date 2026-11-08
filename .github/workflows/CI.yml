@@ -40,6 +40,8 @@ jobs:
   # End to end (test/e2e/e2e.jl): programs compiled by WasmCodegen (wasm-opt -O3, its default), run with the adapter
   # in Node and in Bun, compared with the same programs run natively. The decompress part needs WasmCodegen's
   # julia_regex host extension, which WasmCodegen no longer has: it is not run here (on any runtime).
+  # The page part (WasmHost.Page) runs for WASI; its run for JavaScript is skipped at a WasmCodegen without bytes
+  # arguments of declared imports (gbaraldi/WasmCodegen.jl#91), which the pin below doesn't have.
   e2e:
     name: e2e ${{ matrix.part }}, ${{ matrix.runtime }}
     runs-on: ubuntu-latest
@@ -47,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [spool, import]
+        part: [spool, import, page]
         runtime: [node, bun]
     env:
       WASM_RUNTIME: ${{ matrix.runtime }}
