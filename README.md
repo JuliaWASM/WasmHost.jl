@@ -15,8 +15,8 @@ using Downloads
 f() = String(take!(Downloads.download("https://example.org/data.csv", IOBuffer())))
 ```
 
-**Status:** an early release. Tested on **Node** only, with the spool transport. Other hosts
-are designed but untested; see [Hosts](#hosts).
+**Status:** an early release. Tested on **Node** and **Bun** (CI), with both transports, spool
+and import. Other hosts are designed but untested; see [Hosts](#hosts).
 
 WasmHost.jl was called WasmFetch.jl until it gained decompression and platform tags. Same UUID.
 
@@ -31,20 +31,19 @@ WasmHost.jl was called WasmFetch.jl until it gained decompression and platform t
   a pending response does the work first. The module imports only `wasi_snapshot_preview1`.
   The protocols, `wasm-fetch 1` and `wasm-decompress 1`, are documented in `src/downloads.jl`
   and `src/decompress.jl`.
-- **The import transport (requires an upstream change under discussion).** A
-  `wasm_host.http_request` import, for downloads only. It needs WasmCodegen to let a program
-  declare an import library of its own, `Config(import_libraries = ["wasm_host"])`, which is
-  proposed upstream in
-  [gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57) and not
-  merged. It also uses WasmCodegen's staging area of the linear memory (`Runtime.Staging`) to
-  pass the request and response text. It has been tested only against a local WasmCodegen
-  build that has both.
+- **The import transport.** A `wasm_host.http_request` import, for downloads only. It needs
+  WasmCodegen to let a program declare an import library of its own,
+  `Config(import_libraries = ["wasm_host"])`
+  ([gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57), merged on
+  2026-11-05). It also uses WasmCodegen's staging area of the linear memory
+  (`Runtime.Staging`) to pass the request and response text. CI's end-to-end test runs it
+  against the WasmCodegen commit the workflow pins.
 - **Waiting.** The host's work is asynchronous, and the adapter waits in one of two ways:
   - **`jspi`:** the intercepted `path_open`, or `wasm_host.http_request`, is a
     `WebAssembly.Suspending`, so the module is suspended while the host works. Call the export
     through `WebAssembly.promising`.
   - **`sync`:** the work runs on a worker thread while the main thread blocks in
-    `Atomics.wait`. Node only, spool transport only.
+    `Atomics.wait`. Spool transport only.
 
 ## Downloads
 
@@ -89,14 +88,13 @@ WasmHost.Decompress.decompress(src, dst; format = :auto)   # -> abspath(dst)
 - **Formats:** `:auto` recognizes gzip and zstd by their magic bytes, as Pkg's
   `detect_archive_format` does; `:gzip`, `:deflate` (the zlib format, RFC 1950) and `:zstd`
   name one.
-- **Hosts:** gzip and deflate on every host with an adapter; zstd where the host has it (Node
-  22.15 or newer).
+- **Hosts:** gzip and deflate on every host with an adapter; zstd where the host has it.
 - **Errors:** a `DecompressError(errno, message)` with a WASI errno:
   - `EILSEQ` (25): the data isn't of the format, or of no format `:auto` knows;
   - `EIO` (29): corrupt data or an I/O error;
   - `ENOENT` (44): no source file;
   - `ENOSYS` (52): no host adapter (natively, too), or no decompressor for the format (bzip2,
-    xz and lz4 by magic bytes; zstd on an older Node).
+    xz and lz4 by magic bytes; zstd on a host without it).
 
   `dst` doesn't exist after a failure.
 - **Transport:** always the spool directory, also in a build whose downloads use the import
@@ -133,19 +131,22 @@ WasmHost.Platform.host_platform()   # a Base.BinaryPlatforms.Platform, as HostPl
   tags it equals `HostPlatform()` (tested).
 - **An older variable name:** a program that used another name passes it,
   `host_platform(names = ("WASMHOST_PLATFORM", "OLD_NAME"))`; the first one set wins.
-- **Regex:** `host_platform()` needs WasmCodegen's host regex engine,
-  `Config(host_extensions = [:julia_regex])` (and the host's `julia_regex.mjs`). The
-  `Platform` constructor can parse version tags with a `Regex`, so the closed world contains
-  it. `tags()` doesn't need it.
+- **Regex:** `host_platform()` needs a regex engine in the module. The `Platform` constructor
+  can parse version tags with a `Regex`, so the closed world contains it. WasmCodegen's
+  `:julia_regex` host extension no longer exists; use
+  [WasmCompat.jl](https://github.com/JuliaWASM/WasmCompat.jl)'s PCRE2 backend, opt-in through
+  `WasmCompat.pcre2_config(WasmCodegen.Config(host = :wasi))` (the host also instantiates
+  `libpcre2-8.wasm`: WasmCompat's `js/pcre2.mjs`). `tags()` doesn't need it.
 
 ## Requirements
 
 - Julia 1.12 or 1.13.
-- A WasmCodegen with WASI support for `Config(host = :wasi)`: the filesystem and the environment
-  (`ENV`). At the time of writing these are open pull requests on gbaraldi/WasmCodegen.jl, and
-  upstream `main` doesn't have them yet.
-- Node 22 or newer for the Node adapter (22.15 or newer for zstd), with JavaScript Promise
-  Integration for the `jspi` mode (`--experimental-wasm-jspi` where it isn't on by default).
+- A WasmCodegen with WASI support for `Config(host = :wasi)`: the filesystem and the
+  environment (`ENV`). Upstream `main` has both.
+- Node 24 or newer for the Node adapter, or Bun. The `jspi` mode needs JavaScript Promise
+  Integration (`WebAssembly.Suspending` and `WebAssembly.promising`), which Node 24 and later
+  have without a flag. (Node 22 has only the older JSPI API, behind a flag the adapter
+  doesn't use, and Node 26 rejects the flag: don't pass it.)
 
 ## Building
 
@@ -161,12 +162,15 @@ c = WasmCodegen.compile([WasmCodegen.Entry(main, (); name = "main")];
 write("main.wasm", c.bytes)
 ```
 
-**`verify = :error` doesn't pass yet** for programs that use the Downloads extension.
-WasmCodegen's trim verifier checks the code native inference produces. Native inference
-inlines Downloads' own `request(url)` before WasmCodegen's overlay table is consulted, so the
-verifier reports errors in native code (libcurl's `easy_hook`) that the module never compiles.
-The module itself is clean: 0 unsupported constructs with `trim = :safe`. Use `verify = :warn`
-(the default) until WasmCodegen's verifier checks overlaid methods.
+**`verify = :error` passes** for programs that use the Downloads extension, with a WasmCodegen
+that has
+[gbaraldi/WasmCodegen.jl#60](https://github.com/gbaraldi/WasmCodegen.jl/pull/60) (merged on
+2026-11-06): its trim verifier checks overlaid methods with the module's own inference. Before
+it, the verifier checked the code native inference produces, which inlines Downloads' own
+`request(url)` before the overlay table is consulted, and reported errors in native code
+(libcurl's) that the module never compiles; there, use `verify = :warn`. (The end-to-end
+test builds its `fetch` program with `verify = :error`, in both transports; its `decompress`
+program, which isn't built in CI, still uses `:warn`.)
 
 **The import transport:** also define `WasmHost.transport() = :import` before compiling, and
 pass `import_libraries = ["wasm_host"]` to `Config`. `transport` is a function rather than a
@@ -204,7 +208,7 @@ protocols in `js/common/`. See [`js/README.md`](js/README.md).
 
 | Host | Future package | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|
-| **Node** 22+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate; zstd on 22.15+ | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes:** spool in both modes; import only with a local WasmCodegen that has the upstream change |
+| **Node** 24+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
 | **Browsers** | `@wasmhost/browser` (`js/browser/`, not written) | import intended; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **No.** Design notes only: not supported until something has run in a browser |
 | **workerd** | – | import fits; no filesystem | `DecompressionStream` | – | JSPI, if available | **No** (`js/workerd/`) |
 | **wasmtime** | – | CLI: no (needs a helper process and polling); import from an embedding | the embedding's | the embedding's | the embedding's | **No** (`js/wasmtime/`) |
