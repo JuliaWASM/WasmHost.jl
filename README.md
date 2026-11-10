@@ -223,19 +223,16 @@ using WasmCodegen, Downloads, WasmHost      # loading all three loads the extens
 include("myprogram.jl")                     # defines main()::Int32, which uses Downloads
 
 c = WasmCodegen.compile([WasmCodegen.Entry(main, (); name = "main")];
-                        config = WasmCodegen.Config(host = :wasi, verify = :warn))
+                        config = WasmCodegen.Config(host = :wasi, verify = :error))
 write("main.wasm", c.bytes)
 ```
 
-**`verify = :error` passes** for programs that use the Downloads extension, with a WasmCodegen
-that has
-[gbaraldi/WasmCodegen.jl#60](https://github.com/gbaraldi/WasmCodegen.jl/pull/60) (merged on
-2026-11-06): its trim verifier checks overlaid methods with the module's own inference. Before
-it, the verifier checked the code native inference produces, which inlines Downloads' own
-`request(url)` before the overlay table is consulted, and reported errors in native code
-(libcurl's) that the module never compiles; there, use `verify = :warn`. (The end-to-end
-test builds its `fetch` program with `verify = :error`, in both transports; its `decompress`
-program, which isn't built in CI, still uses `:warn`.)
+**`verify = :error` passes** for programs that use the Downloads extension: WasmCodegen's trim
+verifier checks overlaid methods with the module's own inference
+([gbaraldi/WasmCodegen.jl#60](https://github.com/gbaraldi/WasmCodegen.jl/pull/60)). The
+end-to-end test builds its `fetch` program with `verify = :error`, in both transports; its
+`decompress` program, which isn't built in CI (it needs the removed `julia_regex` host
+extension), still uses `:warn`.
 
 **The import transport:** also define `WasmHost.transport() = :import` before compiling, and
 pass `import_libraries = ["wasm_host"]` to `Config`. `transport` is a function rather than a
