@@ -9,6 +9,7 @@ performed by the JavaScript host around the module. Natively nothing changes.
 | `WasmHost.Downloads` | HTTP requests with the host's `fetch` (TLS, redirects and proxies are the host's) | plain `Downloads.download` / `Downloads.request`, through the package extension |
 | `WasmHost.Decompress` | gzip, deflate and zstd decompression of a file by the host | `WasmHost.Decompress.decompress(src, dst)` |
 | `WasmHost.Platform` | the host's platform tags (arch, os, libc, ...) from the WASI environment | `WasmHost.Platform.host_platform()` |
+| `WasmHost.Page` | messages (bytes) between the program and the JavaScript around it: a page, a worker, a Node script | `WasmHost.Page.send(bytes)`, `receive()`, `poll(f)`, through the package extension |
 
 ```julia
 using Downloads
@@ -138,6 +139,70 @@ WasmHost.Platform.host_platform()   # a Base.BinaryPlatforms.Platform, as HostPl
   `WasmCompat.pcre2_config(WasmCodegen.Config(host = :wasi))` (the host also instantiates
   `libpcre2-8.wasm`: WasmCompat's `js/pcre2.mjs`). `tags()` doesn't need it.
 
+## Page
+
+Messages between the program and the JavaScript around it. What the bytes mean is up to the
+program and the page: a plot's MsgPack update, JSON, text.
+
+```julia
+WasmHost.Page.send(bytes)         # a Vector{UInt8} or a String: the page's onMessage gets the bytes
+WasmHost.Page.receive()           # the page's next posted message (a Vector{UInt8}), or nothing
+WasmHost.Page.poll(f)             # f(bytes) for each posted message; how many there were
+```
+
+```js
+import { makePage } from './WasmHost.jl/js/common/page.mjs';   // (or js/node/, js/browser/page.mjs)
+const page = makePage({ onMessage: (bytes) => deliver(bytes.slice()) });
+const inst = await WebAssembly.instantiate(mod, { ...wasiImports, ...page.imports });
+page.bindMemory(inst.exports.memory);
+page.post(new TextEncoder().encode('{"zoom": 3}'));   // read by the program's next receive/poll
+```
+
+- **Building:** pass `import_libraries = ["wasm_host_page"]` to `Config`. The package extension
+  `WasmHostPageExt` (loaded with WasmCodegen) compiles `Page`'s methods. The import library's
+  protocol is documented in `src/page.jl`, and its host side is `js/common/page.mjs`, which
+  needs no Node or browser API.
+- **The bytes are the page's only during `onMessage`.** A message is a view of the module's
+  memory: the module's next send writes over it, even one made from `onMessage` by calling back
+  into the module, and growing the memory detaches it. Copy it (`bytes.slice()`) to keep it.
+- **An exception of `onMessage` stays on the page's side:** `onError(error, bytes)` gets it (by
+  default it is logged), `stats.errors` counts it, and `send` returns as usual. Thrown into the
+  module, it would unwind the module's frames without running their `finally` blocks, because
+  WasmCodegen catches only Julia's exceptions. Staging's scope would then stay allocated.
+- **Through the memory:** `send` is one call of any size, for `host = :wasi` and `host = :js`
+  (with WasmCodegen's `js/julia.mjs`: `instantiate(bytes, { imports: page.imports })`).
+  WasmCodegen copies a `Vector{UInt8}` or `String` argument of a declared import to the linear
+  memory and passes its offset and length. `receive` and `poll` copy the host's message in
+  through WasmCodegen's staging area (`Runtime.Staging`), in chunks of at most 1 MiB, so they
+  are for `host = :wasi` only: WasmCodegen's bytes arguments go from the module to the host, and
+  a module for JavaScript that calls them doesn't compile.
+- **Hosts:** Node 24 or newer, or Bun 1.4 or newer (tested with Node 24 and 26 and Bun 1.4).
+  No JSPI and no flags are needed, because the page functions don't suspend. `page.mjs` uses no
+  Node API, so a browser should work too, but none has been tested.
+- **Natively** there is no page: `send` keeps a copy in `Page.native_outbox()`, and `receive`
+  takes from `Page.native_inbox()`, which a test fills.
+- **Not for suspended calls:** with `Config(tasks = :jspi)`, a task that sends while another
+  is suspended inside a `wasm_host_page` call isn't supported. The functions don't suspend, and
+  Staging's scopes assume one synchronous call stack.
+
+### Pushing instead of pulling
+
+A module without a way to pass bytes leaves the page to pull a message out through an export,
+4 bytes per call: the tyler-map demo (JuliaWASM/demos) reads WGLMakie's MsgPack updates with
+`msg_word(i, j)`. `Page.send` pushes the message in one call instead. Per 1 KiB message, with
+`wasm-opt -O3`, Node 24 on aarch64 (`test/e2e/prun.mjs`):
+
+| | µs per 1 KiB message |
+|---|---|
+| pulled, 256 calls of a 4-byte export | ~22 |
+| `Page.send` (`:wasi` / `:js`) | 1.4 / 1.3 (Node 26: 1.3 / 1.2; Bun 1.4: 1.2 / 1.0) |
+
+To migrate:
+- the program calls `WasmHost.Page.send(take!(io))` where it queued a message for `msg_word`;
+- the page delivers in `onMessage` (`Bonito.process_message(Bonito.decode_binary(bytes, …))`)
+  instead of looping over `msg_word`;
+- the export calls that pulled go away, as does the queue they read (`clear_msgs!`).
+
 ## Requirements
 
 - Julia 1.12 or 1.13.
@@ -218,15 +283,16 @@ protocols in `js/common/`. See [`js/README.md`](js/README.md).
 - **`WasmCodegen.Runtime.WASM_METHODS`:** WasmCodegen's internal mechanism today, and how its
   own runtime replaces methods. (`@wasm_method` is `Base.Experimental.@overlay` on it.) It isn't
   yet a supported interface for packages; that is being asked upstream.
-- **`WasmCodegen.Runtime.Staging`:** used by the import transport only.
+- **`WasmCodegen.Runtime.Staging`:** used by the import transport and by `Page.receive`.
 
 Expect to update this package when either changes.
 
 ## Tests
 
-- `test/runtests.jl`: native tests of the three modules and their protocols, and of the Node
+- `test/runtests.jl`: native tests of the modules and their protocols (`Page`'s native queues), and of the Node
   adapter's parts when `node` is on `PATH` (the protocol round trip, decompression with
-  `node:zlib`, platform tags against the native `HostPlatform()`). Run them with `Pkg.test()`.
+  `node:zlib`, platform tags against the native `HostPlatform()`, the page adapter on a memory
+  of its own). Run them with `Pkg.test()`.
 - `test/e2e/e2e.jl`: compiles programs with WasmCodegen and runs them in Node.
   - `spool`, `import`: `test/e2e/prog.jl` (plain Downloads calls: an `IOBuffer` body, a 3 MiB
     file, a redirect with a custom header, HEAD, POST, a 404, a refused connection,
@@ -237,8 +303,13 @@ Expect to update this package when either changes.
     (`get_extract_cmd`: 7z, zstd) give, whose tree hash is the artifact's. Error cases, and
     the platform lines against the native run.
 
+  - `page`: `test/e2e/pprog.jl` sends patterns of 0, 1, 7, 1 KiB, 64 KiB and 1 MiB + 1 bytes
+    and UTF-8 strings (up to 1.2 MB), and sends back what the host posts (`prun.mjs`). Its
+    output and the messages the host receives must equal the native run's (`pnative.jl`). It
+    runs for WASI, then for JavaScript (sending only).
+
   ```
-  julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|decompress|all]
+  julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|decompress|page|all]
   ```
 
 ## License

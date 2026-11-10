@@ -2,14 +2,14 @@
   "name": "@wasmhost/browser",
   "version": "0.0.0",
   "private": true,
-  "description": "Browser adapter of WasmHost.jl: a design, not written yet (see README.md). Not published.",
+  "description": "Browser adapter of WasmHost.jl: page messages (page.mjs); downloads and decompression are a design, not written yet (see README.md). Not published.",
   "license": "MIT",
   "type": "module",
-  "exports": {},
+  "exports": { "./page": "./page.mjs" },
   "wasmhost": {
     "transports": ["import"],
     "waiting": ["jspi"],
-    "capabilities": { "downloads": "planned", "decompress": "planned: gzip, deflate (DecompressionStream); no zstd", "platform": "none" },
+    "capabilities": { "downloads": "planned", "decompress": "planned: gzip, deflate (DecompressionStream); no zstd", "platform": "none", "page": "wasm_host_page (page.mjs): tested in Node and Bun, not in a browser" },
     "tested": false
   }
 }

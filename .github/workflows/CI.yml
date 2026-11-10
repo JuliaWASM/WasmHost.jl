@@ -52,7 +52,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [spool, import]
+        # (page: WasmHost.Page for WASI, both directions, and for JavaScript, sending only)
+        part: [spool, import, page]
         runtime: [node, bun]
         node-version: ['24', '26']
         exclude:
@@ -67,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: gbaraldi/WasmCodegen.jl
-          ref: 0034569817c5ddf1b7d1836df38f1b3d6bb00460
+          ref: 10cff8e4d04e451afe0946f5af90b8d39a76b724
           path: wcg
       - uses: julia-actions/setup-julia@v2
         with:

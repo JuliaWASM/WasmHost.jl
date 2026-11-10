@@ -1,7 +1,7 @@
 # End-to-end checks: compile a program with WasmCodegen, run it in Node with WasmHost's adapter,
 # and compare it with native.
 #
-#   julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|decompress|all]
+#   julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|decompress|page|all]
 #
 # - spool, import: test/e2e/prog.jl (plain Downloads calls) against a local HTTP server
 #   (server.mjs). Its output and downloaded bytes must equal the same program run natively
@@ -10,6 +10,9 @@
 #   artifact tarball, gzip and zstd as the Pkg server serves it (and deflate). The decompressed
 #   bytes must equal what native Pkg's own decompressors give (`get_extract_cmd`: 7z, zstd),
 #   whose tree hash is the artifact's; the platform lines must equal the native run's.
+# - page: test/e2e/pprog.jl (WasmHost.Page) for WASI, both directions, with the page adapter
+#   (js/common/page.mjs, prun.mjs): its output and the messages it sends must equal the native
+#   run's (pnative.jl). Then for JavaScript (`host = :js`, sending only).
 #
 # Environment: JULIA (default: this julia), WASM_RUNTIME (node, the default, or bun), NODE (default: `node` on PATH,
 # Node 24+, which has JSPI) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
@@ -154,10 +157,28 @@ function decompression(env)
     return ok
 end
 
+# page messages: for WASI, then for JavaScript (sending only)
+function page(env)
+    native = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl"))`)
+    print("native:\n", native)
+    want(prefix) = lines(native, prefix)
+    ok = occursin("page check: true", native)
+    for host in ("wasi", "js")
+        wasm = joinpath(work, "page-$host.wasm")
+        build(env, wasm, host, "page")
+        out = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)
+        same = occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
+               (host == "js" || lines(out, "R") == want("R"))
+        println("== page/$host: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
+        ok &= same
+    end
+    return ok
+end
+
 env = setup_env(joinpath(work, "env"))
 ok = true
-for part in (which == "all" ? ["spool", "import", "decompress"] : [which])
-    global ok &= part == "decompress" ? decompression(env) : downloads(env, part)
+for part in (which == "all" ? ["spool", "import", "decompress", "page"] : [which])
+    global ok &= part == "decompress" ? decompression(env) : part == "page" ? page(env) : downloads(env, part)
 end
 println(ok ? "E2E PASS" : "E2E FAIL")
 exit(ok ? 0 : 1)

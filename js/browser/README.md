@@ -1,7 +1,13 @@
 # `@wasmhost/browser`: browser adapter (design, not implemented)
 
 Nothing here has run in a browser yet: don't treat browsers as supported. `package.json` names
-the future package; it has no code and isn't published. It must not import any `node:` module.
+the future package; it isn't published. It must not import any `node:` module.
+
+## Page messages
+
+`page.mjs` is `common/page.mjs` (`WasmHost.Page`, the import library `wasm_host_page`). It needs
+only the module's memory: no filesystem, no JSPI. It is tested in Node and Bun (`test/e2e`,
+`prun.mjs`), not in a browser.
 
 ## Downloads
 
