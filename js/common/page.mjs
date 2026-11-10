@@ -6,18 +6,15 @@
 //   page.bindMemory(inst.exports.memory);
 //   page.post(new TextEncoder().encode('hello'));   // for the module's Page.receive / Page.poll
 //
-//   wasm_host_page.send(off i32, len i32, last i32)   bytes of a message; it ends where last = 1
+//   wasm_host_page.send(off i32, len i32)             the bytes of a message
 //   wasm_host_page.pending() -> i32                    the length of the next posted message, or -1
 //   wasm_host_page.read(off i32, start i32, n i32)     copy bytes start .. start+n-1 of it to off
 //   wasm_host_page.pop()                               that message is done
 //
-// `onMessage(bytes)` is called once per message the module sends. A message the module sent in
-// one call (all of them, with a WasmCodegen that passes bytes arguments, gbaraldi/WasmCodegen.jl#91;
-// those up to 1 MiB otherwise) is a view of the module's memory, valid only until `onMessage`
-// returns: the module writes over it afterwards, and growing the memory detaches it. With bytes
-// arguments, the module's next send writes over it even sooner, also one made by code that
-// `onMessage` calls in the module. Copy it (`bytes.slice()`) to keep it. A message of several
-// calls is a buffer of its own.
+// `onMessage(bytes)` is called once per message the module sends, with a view of the module's
+// memory, valid only until `onMessage` returns: the module's next send writes over it (also one
+// made by code that `onMessage` calls in the module), and growing the memory detaches it. Copy it
+// (`bytes.slice()`) to keep it.
 //
 // An exception of `onMessage` is not thrown into the module: it is given to `onError(error, bytes)`
 // (by default, console.error) and counted in `stats.errors`, and `Page.send` returns as usual. A
@@ -45,24 +42,13 @@ function ownBytes(message) {
 export function makePage({ onMessage = () => {}, onError = (err) => console.error('wasm_host_page: onMessage failed:', err), memory = null } = {}) {
   let mem = memory;
   const queue = [];            // posted messages, for the module
-  let parts = [];              // the chunks of a message the module is sending
-  let partsLength = 0;
   const stats = { sent: 0, sentBytes: 0, received: 0, receivedBytes: 0, errors: 0 };
   const view = (off, len) => {
     if (!mem) throw new Error('wasm_host_page: no memory (page.bindMemory(instance.exports.memory))');
     return new Uint8Array(mem.buffer, off >>> 0, len >>> 0);   // (a fresh view: the memory may have grown)
   };
-  function send(off, len, last) {
-    const bytes = view(off, len);
-    if (!last) { parts.push(bytes.slice()); partsLength += bytes.length; return; }
-    let message = bytes;
-    if (parts.length) {
-      message = new Uint8Array(partsLength + bytes.length);
-      let p = 0;
-      for (const part of parts) { message.set(part, p); p += part.length; }
-      message.set(bytes, p);
-      parts = []; partsLength = 0;
-    }
+  function send(off, len) {
+    const message = view(off, len);
     stats.sent++; stats.sentBytes += message.length;
     try { onMessage(message); } catch (err) { stats.errors++; onError(err, message); }
   }

@@ -8,7 +8,8 @@ const Page = WasmHost.Page
 
 say(xs...) = (println(Core.stdout, xs...); nothing)
 
-# the messages' sizes: empty, small, a word, 1 KiB, 64 KiB, and one past a chunk of Staging (1 MiB)
+# the messages' sizes: empty, small, a word, 1 KiB, 64 KiB, and one past a chunk of Staging (1 MiB,
+# as receive copies in)
 const SIZES = (0, 1, 7, 1024, 65536, 1048577)
 # the strings' lengths in characters (the last one is more than 1 MiB of UTF-8)
 const LENGTHS = (0, 1, 9, 1000, 500000)

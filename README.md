@@ -162,27 +162,20 @@ page.post(new TextEncoder().encode('{"zoom": 3}'));   // read by the program's n
   `WasmHostPageExt` (loaded with WasmCodegen) compiles `Page`'s methods. The import library's
   protocol is documented in `src/page.jl`, and its host side is `js/common/page.mjs`, which
   needs no Node or browser API.
-- **The bytes are the page's only during `onMessage`.** A message of one call is a view of
-  the module's memory: the module writes over it afterwards, and growing the memory detaches
-  it. With bytes arguments (see below), the module's next send writes over it, even one made
-  from `onMessage` by calling back into the module. Copy it (`bytes.slice()`) to keep it. A
-  message of several calls is a buffer of its own.
+- **The bytes are the page's only during `onMessage`.** A message is a view of the module's
+  memory: the module's next send writes over it, even one made from `onMessage` by calling back
+  into the module, and growing the memory detaches it. Copy it (`bytes.slice()`) to keep it.
 - **An exception of `onMessage` stays on the page's side:** `onError(error, bytes)` gets it (by
   default it is logged), `stats.errors` counts it, and `send` returns as usual. Thrown into the
   module, it would unwind the module's frames without running their `finally` blocks, because
   WasmCodegen catches only Julia's exceptions. Staging's scope would then stay allocated.
-- **Two ways through the memory.** The choice is made when the module is compiled, by
-  `WasmHostPageExt.bytes_arguments()`, which checks the capability (the argument types
-  WasmCodegen passes as bytes), not a version:
-  - **`Runtime.Staging`** (any WasmCodegen with `Config(import_libraries)`, `host = :wasi`):
-    the bytes are copied in chunks of at most 1 MiB, one call each. Both directions.
-  - **Bytes arguments** (a WasmCodegen with
-    [gbaraldi/WasmCodegen.jl#91](https://github.com/gbaraldi/WasmCodegen.jl/pull/91)): the code
-    generator copies a `Vector{UInt8}` or `String` argument of a declared import itself, so
-    `send` is one call of any size, also for `host = :js` (with WasmCodegen's `js/julia.mjs`:
-    `instantiate(bytes, { imports: page.imports })`). `receive` and `poll` still use Staging, so
-    they are for `host = :wasi` only. A module for JavaScript that calls them doesn't compile:
-    WasmCodegen has no way yet for the host to give bytes to a `:js` module.
+- **Through the memory:** `send` is one call of any size, for `host = :wasi` and `host = :js`
+  (with WasmCodegen's `js/julia.mjs`: `instantiate(bytes, { imports: page.imports })`).
+  WasmCodegen copies a `Vector{UInt8}` or `String` argument of a declared import to the linear
+  memory and passes its offset and length. `receive` and `poll` copy the host's message in
+  through WasmCodegen's staging area (`Runtime.Staging`), in chunks of at most 1 MiB, so they
+  are for `host = :wasi` only: WasmCodegen's bytes arguments go from the module to the host, and
+  a module for JavaScript that calls them doesn't compile.
 - **Hosts:** Node 24 or newer, or Bun 1.4 or newer (tested with Node 24 and 26 and Bun 1.4).
   No JSPI and no flags are needed, because the page functions don't suspend. `page.mjs` uses no
   Node API, so a browser should work too, but none has been tested.
@@ -196,15 +189,13 @@ page.post(new TextEncoder().encode('{"zoom": 3}'));   // read by the program's n
 
 A module without a way to pass bytes leaves the page to pull a message out through an export,
 4 bytes per call: the tyler-map demo (JuliaWASM/demos) reads WGLMakie's MsgPack updates with
-`msg_word(i, j)`. `Page.send` pushes the message in one call instead (or one per MiB). Per 1 KiB
-message, with `wasm-opt -O3`, Node 24 on aarch64 (`test/e2e/prun.mjs`, and the comparison in
-gbaraldi/WasmCodegen.jl#91's review):
+`msg_word(i, j)`. `Page.send` pushes the message in one call instead. Per 1 KiB message, with
+`wasm-opt -O3`, Node 24 on aarch64 (`test/e2e/prun.mjs`):
 
 | | µs per 1 KiB message |
 |---|---|
 | pulled, 256 calls of a 4-byte export | ~22 |
-| `Page.send`, Staging (WasmCodegen main, `:wasi`) | ~2.7 |
-| `Page.send`, bytes arguments (#91, `:wasi` / `:js`) | ~1.4 / ~1.3 |
+| `Page.send` (`:wasi` / `:js`) | 1.4 / 1.3 (Node 26: 1.3 / 1.2; Bun 1.4: 1.2 / 1.0) |
 
 To migrate:
 - the program calls `WasmHost.Page.send(take!(io))` where it queued a message for `msg_word`;
@@ -292,9 +283,7 @@ protocols in `js/common/`. See [`js/README.md`](js/README.md).
 - **`WasmCodegen.Runtime.WASM_METHODS`:** WasmCodegen's internal mechanism today, and how its
   own runtime replaces methods. (`@wasm_method` is `Base.Experimental.@overlay` on it.) It isn't
   yet a supported interface for packages; that is being asked upstream.
-- **`WasmCodegen.Runtime.Staging`:** used by the import transport and by `Page`.
-- **`WasmCodegen.IMPORT_BYTES`:** the argument types WasmCodegen passes as bytes (#91), read by
-  `WasmHostPageExt.bytes_arguments()` to choose `Page`'s way.
+- **`WasmCodegen.Runtime.Staging`:** used by the import transport and by `Page.receive`.
 
 Expect to update this package when either changes.
 
@@ -317,8 +306,7 @@ Expect to update this package when either changes.
   - `page`: `test/e2e/pprog.jl` sends patterns of 0, 1, 7, 1 KiB, 64 KiB and 1 MiB + 1 bytes
     and UTF-8 strings (up to 1.2 MB), and sends back what the host posts (`prun.mjs`). Its
     output and the messages the host receives must equal the native run's (`pnative.jl`). It
-    runs for WASI, then for JavaScript when WasmCodegen passes bytes arguments (#91). Without
-    them the JavaScript run is reported as skipped.
+    runs for WASI, then for JavaScript (sending only).
 
   ```
   julia test/e2e/e2e.jl /path/to/WasmCodegen.jl [spool|import|decompress|page|all]

@@ -1,6 +1,6 @@
 // node | bun   prun.mjs MODULE.wasm wasi|js [JULIA_MJS]
 // Runs pprog.jl's module with the page adapter (js/common/page.mjs): a module for WASI on node:wasi
-// (`main`: both directions), or one for JavaScript (`host = :js`, a WasmCodegen with bytes arguments)
+// (`main`: both directions), or one for JavaScript (`host = :js`)
 // on WasmCodegen's js/julia.mjs (`main_send`: sending only). Prints the module's output, whether the
 // messages it sent are the expected ones (the same check as pnative.jl), and the time of a send.
 import fs from 'node:fs';

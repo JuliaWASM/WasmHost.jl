@@ -248,8 +248,8 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         empty!(P.native_outbox())
     end
 
-    # the page adapter's imports as a module calls them, on a memory of its own: messages of one
-    # call and of several, posted messages read in chunks, and the errors
+    # the page adapter's imports as a module calls them, on a memory of its own: messages sent,
+    # posted messages read in chunks, and the errors
     @testset "JavaScript: page adapter" begin
         if node === nothing
             @test_skip "$runtime not found"
@@ -264,9 +264,9 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             page.bindMemory(memory);
             const { send, pending, read, pop } = page.imports[LIBRARY];
             mem.set([1, 2, 3, 4, 5], 100);
-            send(100, 3, 1);                       // one call: a view of the memory
-            send(100, 2, 0); send(102, 3, 1);      // two: a buffer of its own
-            send(0, 0, 1);                         // empty
+            send(100, 3);                          // a view of the memory
+            send(100, 5);
+            send(0, 0);                            // empty
             page.post('αβ'); page.post(new Uint8Array([9, 8, 7, 6])); page.post(new ArrayBuffer(0));
             const out = [pending()];
             read(200, 0, 2); read(202, 2, 2); pop();
@@ -281,12 +281,12 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             const caught = [];
             const failing = makePage({ memory, onMessage: () => { throw new Error('boom'); }, onError: (e, b) => caught.push([e.message, b.length]) });
             let threw = false;
-            try { failing.imports[LIBRARY].send(100, 3, 1); } catch { threw = true; }
+            try { failing.imports[LIBRARY].send(100, 3); } catch { threw = true; }
             process.stdout.write(JSON.stringify({ got, views, out, errs, stats: page.stats, caught, threw, errors: failing.stats.errors }));
             """
             r = read(`$node --input-type=module -e $script`, String)
             @test occursin("\"got\":[[1,2,3],[1,2,3,4,5],[]]", r)
-            @test occursin("\"views\":2", r)   # (the one-call messages are views; the two-call one is not)
+            @test occursin("\"views\":3", r)   # (each message is a view of the memory)
             @test occursin("\"out\":[4,[206,177,206,178],4,[8,7,6],0,-1,0]", r)
             # (past the end, then fine; then nothing pending; a message of the wrong kind)
             @test occursin("\"errs\":[\"RangeError\",\"none\",\"Error\",\"Error\",\"TypeError\"]", r)

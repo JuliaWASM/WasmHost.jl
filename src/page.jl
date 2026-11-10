@@ -10,25 +10,21 @@ Import library `wasm_host_page` (`Config(import_libraries = ["wasm_host_page"])`
 is `js/common/page.mjs`. Offsets and lengths are of the module's linear memory (`memory`), as
 `i32`s; byte positions are 0-based:
 
-    send(off, len, last)       bytes of a message; the message ends with the call where last = 1
-                               (a message larger than a chunk of the memory is several calls)
+    send(off, len)             the bytes of a message
     pending() -> i32           the length of the host's next message, or -1 when there is none
     read(off, start, n)        copy bytes start, ..., start + n - 1 of that message to off
     pop()                      that message is done: the next one is next
 
 The bytes of `send` are the host's only during the call (the module may write over them
 afterwards): the host copies what it keeps. `js/common/page.mjs` gives the callback a view of
-a message of one call, and a buffer of its own for a message of several. The host's functions
+the memory. The host's functions
 must not throw into the module: a JavaScript exception unwinds its frames without running their
 `finally` blocks (`page.mjs` gives the callback's exceptions to `onError`).
 
-How the bytes reach the memory depends on the code generator (`WasmHostPageExt`):
-
-- with WasmCodegen's staging area (`Runtime.Staging`, for `host = :wasi`), in chunks of at most
-  `Staging.CHUNK` (1 MiB): both directions;
-- with a WasmCodegen that copies a `Vector{UInt8}` or `String` argument of a declared import to
-  the memory itself (gbaraldi/WasmCodegen.jl#91): `send` is one call, for `host = :js` too.
-  Receiving needs the staging area, so it is for `host = :wasi` only.
+How the bytes reach the memory (`WasmHostPageExt`): WasmCodegen copies the `Vector{UInt8}` or
+`String` argument of `send` to the memory itself and passes its offset and length (`host = :wasi`
+and `host = :js`); `receive` copies in through WasmCodegen's staging area (`Runtime.Staging`), in
+chunks of at most `Staging.CHUNK` (1 MiB), so receiving is for `host = :wasi` only.
 
 Natively there is no host: `send` keeps a copy of the message in [`native_outbox`](@ref), and
 `receive` takes the messages of [`native_inbox`](@ref), which a native test fills. A program

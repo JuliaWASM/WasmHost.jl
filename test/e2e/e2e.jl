@@ -12,8 +12,7 @@
 #   whose tree hash is the artifact's; the platform lines must equal the native run's.
 # - page: test/e2e/pprog.jl (WasmHost.Page) for WASI, both directions, with the page adapter
 #   (js/common/page.mjs, prun.mjs): its output and the messages it sends must equal the native
-#   run's (pnative.jl). Then for JavaScript (`host = :js`, sending only), when WasmCodegen passes
-#   bytes arguments of declared imports (gbaraldi/WasmCodegen.jl#91); skipped otherwise.
+#   run's (pnative.jl). Then for JavaScript (`host = :js`, sending only).
 #
 # Environment: JULIA (default: this julia), WASM_RUNTIME (node, the default, or bun), NODE (default: `node` on PATH,
 # Node 24+, which has JSPI) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
@@ -158,20 +157,13 @@ function decompression(env)
     return ok
 end
 
-# page messages: for WASI (Staging, or bytes arguments), then for JavaScript if WasmCodegen can
+# page messages: for WASI, then for JavaScript (sending only)
 function page(env)
     native = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl"))`)
     print("native:\n", native)
     want(prefix) = lines(native, prefix)
     ok = occursin("page check: true", native)
-    direct = strip(read(`$julia --startup-file=no --project=$env -e "using WasmCodegen, WasmHost; print(Base.get_extension(WasmHost, :WasmHostPageExt).bytes_arguments())"`, String)) == "true"
-    println("WasmCodegen passes bytes arguments of declared imports (#91): ", direct)
     for host in ("wasi", "js")
-        if host == "js" && !direct
-            println("== page/js: SKIPPED: this WasmCodegen does not pass bytes arguments of declared imports ",
-                    "(gbaraldi/WasmCodegen.jl#91), which a module for JavaScript needs")
-            continue
-        end
         wasm = joinpath(work, "page-$host.wasm")
         build(env, wasm, host, "page")
         out = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)

@@ -6,15 +6,12 @@
 declares (`Config(import_libraries = ["wasm_host_page"])`). Natively `Page` stays its own (the
 native queues).
 
-The bytes go through the linear memory in one of two ways, chosen when the module is compiled:
-
-- **Staging** (WasmCodegen's `Runtime.Staging`, internal, `host = :wasi`): a chunk of its data
-  arena (at most `Staging.CHUNK` bytes) per call, copied with `copy_to_linear!` and
-  `copy_from_linear!`, as `WasmHostDownloadsExt`'s import transport does. Both directions.
-- **Bytes arguments** (gbaraldi/WasmCodegen.jl#91): the code generator copies a `Vector{UInt8}`
-  or `String` argument of a declared import to the memory and passes its offset and length, so
-  a message is one call, also for `host = :js`. [`bytes_arguments`](@ref) says whether this
-  WasmCodegen does. Receiving still uses Staging.
+`send` is one call: WasmCodegen copies a `Vector{UInt8}` or `String` argument of a declared
+import to the linear memory and passes its offset and length (`WasmCodegen.IMPORT_BYTES`), for
+`host = :wasi` and `host = :js`. `receive` copies the host's bytes in through WasmCodegen's
+staging area (`Runtime.Staging`, internal, `host = :wasi`), in chunks of at most `Staging.CHUNK`
+bytes, as `WasmHostDownloadsExt`'s import transport does: WasmCodegen's bytes arguments go one
+way only, so a program for `host = :js` that receives does not compile.
 """
 module WasmHostPageExt
 
@@ -24,53 +21,12 @@ import WasmCodegen
 const Page = WasmHost.Page
 const Staging = WasmCodegen.Runtime.Staging
 
-"""
-    bytes_arguments() -> Bool
-
-Whether this WasmCodegen passes the bytes of a `Vector{UInt8}` or `String` argument of a declared
-import (gbaraldi/WasmCodegen.jl#91), by the capability itself: the argument types it accepts as
-bytes (`WasmCodegen.IMPORT_BYTES`). A constant, so a module contains only the way it uses.
-"""
-bytes_arguments() = BYTES_ARGUMENTS
-const BYTES_ARGUMENTS = isdefined(WasmCodegen, :IMPORT_BYTES) &&
-                        WasmCodegen.IMPORT_BYTES isa Tuple &&
-                        Vector{UInt8} in WasmCodegen.IMPORT_BYTES && String in WasmCodegen.IMPORT_BYTES
-
-## sending
-
-# one call: the code generator copies the bytes (#91)
-send_direct(bytes::Vector{UInt8}) =
-    ccall((:send, "wasm_host_page"), Cvoid, (Vector{UInt8}, Int32), bytes, Int32(1))
-send_direct(s::String) =
-    ccall((:send, "wasm_host_page"), Cvoid, (String, Int32), s, Int32(1))
-
-# bytes i + 1, ..., i + k of the message, through Staging's data arena
-function send_chunk(bytes::Union{Vector{UInt8},String}, i::Int, k::Int, last::Bool)
-    Staging.with_scope() do
-        off = Staging.alloc_data(k; align = 1)
-        Staging.copy_to_linear!(off, bytes, i + 1, k)
-        ccall((:send, "wasm_host_page"), Cvoid, (UInt32, UInt32, Int32), off, UInt32(k), Int32(last))
-    end
-    return nothing
-end
-
-# in chunks of at most Staging.CHUNK bytes (one call for an empty message)
-function send_staged(bytes::Union{Vector{UInt8},String})
-    n = sizeof(bytes)
-    i = 0
-    while true
-        k = min(n - i, Int(Staging.CHUNK))
-        last = i + k >= n
-        send_chunk(bytes, i, k, last)
-        last && return nothing
-        i += k
-    end
-end
+## sending (one call: WasmCodegen copies the bytes and passes their offset and length)
 
 Base.Experimental.@overlay WasmCodegen.Runtime.WASM_METHODS WasmHost.Page.send(bytes::Vector{UInt8}) =
-    (BYTES_ARGUMENTS ? send_direct(bytes) : send_staged(bytes); nothing)
+    (ccall((:send, "wasm_host_page"), Cvoid, (Vector{UInt8},), bytes); nothing)
 Base.Experimental.@overlay WasmCodegen.Runtime.WASM_METHODS WasmHost.Page.send(s::String) =
-    (BYTES_ARGUMENTS ? send_direct(s) : send_staged(s); nothing)
+    (ccall((:send, "wasm_host_page"), Cvoid, (String,), s); nothing)
 
 ## receiving (Staging: `host = :wasi`)
 
