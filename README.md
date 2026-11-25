@@ -272,6 +272,12 @@ The JavaScript side has one adapter per host family under `js/`, each laid out a
 package with a `package.json` that isn't published yet. They share the host-independent
 protocols in `js/common/`. See [`js/README.md`](js/README.md).
 
+Use the adapter of the WasmHost version the module was built with. The protocols keep their
+names across versions, but an older adapter can be wrong for a newer module: the Node adapter
+from before timeouts were rounded to a whole millisecond refuses some of them (a thousand
+times the seconds sent is then not a whole number, e.g. 8.124: a `RequestError` with code
+56) and makes 1 ms of a timeout of 0.
+
 | Host | Future package | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|
 | **Node** 24+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |

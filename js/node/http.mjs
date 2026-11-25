@@ -7,6 +7,9 @@ import { curlCode } from '../common/fetch.mjs';
 
 // A request's timeout in milliseconds: the whole number that Julia's side made its seconds from
 // (as libcurl gets them; 0 is none, Infinity too)
+// (Rounded: a thousand times the seconds is not always that whole number, 8.124 * 1000, and
+// `AbortSignal.timeout` refuses a fraction. An adapter from before this rounding fails such a
+// request of a module built with this version: the adapter goes with the module.)
 export const timeoutMs = (req) => Math.round(req.timeout * 1000);
 
 // Perform one request (`req` of parseRequest, with `outputHost`/`inputHost` mapped): the result
