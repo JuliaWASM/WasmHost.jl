@@ -98,11 +98,20 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             e = try decompress(src, dst) catch e; e end
             @test e isa DecompressError && e.errno == 52 && occursin("no answer", e.message)
         end
-        # (nothing left behind; no destination after a failure)
-        @test isempty(readdir(spool)) && !ispath(dst)
+        # (nothing left behind; the destination that was there, which no host opened, is as it was)
+        @test isempty(readdir(spool)) && read(dst, String) == "old"
         # the source as the destination: refused, and still there
         e = try decompress(src, joinpath(dir, ".", "a.gz")) catch e; e end
         @test e isa DecompressError && e.errno == 28 && read(src, String) == "x"
+        withenv("WASMHOST_SPOOL" => spool) do
+            # (under another name, and no host to find that out: no answer, and still there)
+            symlink("a.gz", joinpath(dir, "alias.gz"))
+            e = try decompress(joinpath(dir, "alias.gz"), src) catch e; e end
+            @test e isa DecompressError && e.errno == 52 && read(src, String) == "x"
+            # a source that doesn't exist, as the destination too: the host's to answer (ENOENT), as for any missing source
+            e = try decompress(joinpath(dir, "none.gz"), joinpath(dir, "none.gz")) catch e; e end
+            @test e isa DecompressError && e.errno == 52
+        end
     end
 
     @testset "Platform" begin
@@ -283,23 +292,40 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             // a response file that is a link out of the preopen: not served
             fs.symlinkSync(path.join(dir, 'outside'), path.join(spool, '5.dres'));
             r.push(ask(5, 'a.gz', 'b'), fs.existsSync(path.join(dir, 'outside')), host.stats.decompress);
+            // a destination that was there is removed only once it was opened for writing: not when there is no source,
+            const old = () => fs.existsSync(path.join(box, 'old')) ? fs.readFileSync(path.join(box, 'old'), 'utf8') : 'removed';
+            fs.writeFileSync(path.join(box, 'old'), 'old');
+            r.push(ask(6, 'nothing.gz', 'old'), old());
+            // nor when it can't be opened (through a link: the file the link names is not removed either);
+            fs.chmodSync(path.join(box, 'old'), 0o444); fs.symlinkSync('old', path.join(box, 'link'));
+            // (root opens it all the same)
+            r.push(process.getuid?.() === 0 ? 'root' : [ask(7, 'a.gz', 'link'), old()].join(' '));
+            // after a failed decompression it is
+            fs.chmodSync(path.join(box, 'old'), 0o644); fs.writeFileSync(path.join(box, 'bad.gz'), zlib.gzipSync('hello').subarray(0, 12));
+            r.push(ask(8, 'bad.gz', 'old'), old());
+            // a spool that is itself a preopen, both named with a trailing slash
+            wrapWasi({ path_open: () => 0 }, { preopens: { '/spool/': path.join(dir, 'spool') }, spool: '/spool/', mode: 'sync' });
             process.stdout.write(r.join(' '));
             """
             r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
-            @test r == "0 hello 28 28 28 hello none false 4"
-            # a response file that can't be written: `path_open` returns (the module then finds no response)
+            @test startswith(r, "0 hello 28 28 28 hello none false 4 44 old ") && endswith(r, " 29 removed")
+            if occursin(" root ", r)
+                @test_skip "root opens a read-only file"
+            else
+                @test occursin(" 2 old ", r)
+            end
+            # a response file that can't be written (a link to a file in a directory that doesn't exist): `path_open`
+            # returns after the job (the module then finds no response)
             script = prelude * """
-            fs.writeFileSync(path.join(spool, '1.dreq'), '');
-            fs.chmodSync(spool, 0o555);
-            const r = ask(1, 'a.gz', 'a');
-            fs.chmodSync(spool, 0o755);
-            fs.writeFileSync(path.join(dir, 'returned'), String(r));
+            fs.symlinkSync(path.join(box, 'nowhere', 'res'), path.join(spool, '1.dres'));
+            const r = [ask(1, 'a.gz', 'a'), host.stats.decompress, fs.readFileSync(path.join(box, 'a'), 'utf8')];
+            fs.writeFileSync(path.join(dir, 'returned'), r.join(' '));
             """
             dir = mktempdir()
             p = run(`$node --input-type=module -e $script $dir`; wait = false)
             timedwait(() -> process_exited(p), 60.0) === :ok || kill(p, Base.SIGKILL)
             wait(p)
-            @test isfile(joinpath(dir, "returned"))
+            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello"
         end
     end
 

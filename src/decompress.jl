@@ -71,9 +71,10 @@ end
 
 Decompress the file `src` into the file `dst` (replaced if it exists) and return `dst`'s
 absolute path. `format` is `:auto` (gzip or zstd, by magic bytes), `:gzip`, `:deflate` or
-`:zstd`. Throws a [`DecompressError`](@ref) when the host doesn't complete it; `dst` then
-doesn't exist. (But when `dst` is `src` itself, also under another name, which is `EINVAL`:
-the file is left as it is.)
+`:zstd`. Throws a [`DecompressError`](@ref) when the host doesn't complete it. A `dst` that
+this call made then doesn't exist. One that was there before is removed only by the host, once
+it has opened it for writing; until then it is left as it is (so when `dst` is `src` itself,
+also under another name, which is `EINVAL`).
 
 The host does the work through the spool directory. Without one (natively, or a host without
 the adapter) this is `DecompressError(ENOSYS)`: a native program decompresses with its own
@@ -82,18 +83,21 @@ tools.
 function decompress(src::AbstractString, dst::AbstractString; format::Symbol = :auto)::String
     fmt = format_name(format)
     s, d = String(abspath(src)), String(abspath(dst))
-    s == d && throw(DecompressError(EINVAL, "the source and the destination are the same file"))
+    # (a source that doesn't exist is the host's ENOENT, also when `dst` names it too)
+    s == d && ispath(s) && throw(DecompressError(EINVAL, "the source and the destination are the same file"))
     isempty(spool_dir()) &&
         throw(DecompressError(ENOSYS, "this host provides no decompression (WASMHOST_SPOOL is not set)"))
+    # (a `d` that is there already, a dangling link too, is not this call's to remove: it may be the
+    # source under another name, or a file the host never opened)
+    made = !ispath(d) && !islink(d)
     text = spool_exchange(request_text(s, d, fmt), ".dreq", ".dres")
     if text === nothing
-        rm(d; force = true)
+        made && rm(d; force = true)
         throw(DecompressError(ENOSYS, "no answer from the host (is its adapter installed?)"))
     end
     errno, msg = parse_answer(split_lines(text))
     if errno != 0
-        # (EINVAL: the host found `d` to be the source under another name, e.g. through a link)
-        errno == EINVAL || rm(d; force = true)
+        made && rm(d; force = true)
         throw(DecompressError(errno, msg))
     end
     return d

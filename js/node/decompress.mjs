@@ -21,9 +21,10 @@ function stage(format) {
   return zlib.createZstdDecompress();
 }
 
-// Decompress the host file `srcHost` into `dstHost`: [errno, message], [0, ''] when done. On
-// failure `dstHost` doesn't exist, unless it is the source itself (the same file, by another
-// name too): that is EINVAL, and the file is left as it is.
+// Decompress the host file `srcHost` into `dstHost`: [errno, message], [0, ''] when done. A
+// failure removes `dstHost` only once this call has opened it for writing: before that (no
+// source, not the format's data, a destination that can't be opened, or that is the source
+// itself, by another name too: EINVAL) a file of that name is left as it is.
 export async function decompressFile(srcHost, dstHost, format = 'auto') {
   let head;
   try {
@@ -41,8 +42,10 @@ export async function decompressFile(srcHost, dstHost, format = 'auto') {
   const c = chooseFormat(format, head);
   if (c.errno !== undefined) return [c.errno, c.message];
   if (c.format === 'zstd' && !hasZstd) return [ERRNO.ENOSYS, `zstd: this Node (${process.version}) has no zlib.createZstdDecompress`];
+  let out;
+  try { out = fs.openSync(dstHost, 'w'); } catch (err) { return [errnoOf(err), `${c.format}: ${String(err?.message ?? err)}`]; }
   try {
-    await pipeline(fs.createReadStream(srcHost), stage(c.format), fs.createWriteStream(dstHost));
+    await pipeline(fs.createReadStream(srcHost), stage(c.format), fs.createWriteStream(dstHost, { fd: out }));
     return [0, ''];
   } catch (err) {
     fs.rmSync(dstHost, { force: true });

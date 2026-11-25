@@ -98,7 +98,9 @@ WasmHost.Decompress.decompress(src, dst; format = :auto)   # -> abspath(dst)
   - `ENOSYS` (52): no host adapter (natively, too), or no decompressor for the format (bzip2,
     xz and lz4 by magic bytes; zstd on a host without it).
 
-  `dst` doesn't exist after a failure (other than `EINVAL`).
+  After a failure a `dst` that the call made doesn't exist. One that was there before is removed
+  only once the host has opened it for writing: until then (no source, not the format's data,
+  no adapter, `EINVAL`) it is left as it is.
 - **Transport:** always the spool directory, also in a build whose downloads use the import
   transport.
 
