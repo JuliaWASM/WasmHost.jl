@@ -44,8 +44,6 @@ end
 # (what the native method sends unless the caller sets one)
 const USER_AGENT = Downloads.Curl.USER_AGENT
 
-header_pairs(headers) = Pair{String,String}[String(k) => String(v) for (k, v) in headers]
-
 # the request's body: a path of the program, or an IO copied to a spool file first
 input_path(::Nothing) = ("", false)
 input_path(path::AbstractString) = (String(abspath(path)), false)
@@ -98,8 +96,7 @@ function wasm_request(url::String, input, output, method, headers, timeout::Floa
                       throw::Bool)::Union{Response,RequestError}
     meth = method === nothing ? (input !== nothing ? "PUT" : output !== nothing ? "GET" : "HEAD") :
            String(method)
-    hdrs = header_pairs(headers)
-    any(kv -> lowercase(kv[1]) == "user-agent", hdrs) || push!(hdrs, "User-Agent" => USER_AGENT)
+    hdrs = Host.header_pairs(headers, USER_AGENT)
     inp, in_tmp = input_path(input)
     out = output_path(output)
     local r::Host.Result
@@ -138,9 +135,10 @@ Base.Experimental.@overlay WasmCodegen.Runtime.WASM_METHODS function Downloads.r
     interrupt  :: Union{Nothing, Base.Event} = nothing,
 ) :: Union{Response, RequestError}
     # (`verbose`, `debug`, `downloader` and `interrupt` have no meaning for the host's fetch)
+    seconds = Host.timeout_seconds(timeout)
     p = progress === nothing ? nothing :
         Downloads.p_func(progress, something(input, devnull), something(output, devnull))
-    return wasm_request(String(url), input, output, method, headers, Float64(timeout), p, throw)
+    return wasm_request(String(url), input, output, method, headers, seconds, p, throw)
 end
 
 ## what else Downloads needs in a trimmed module

@@ -59,7 +59,7 @@ module contains no libcurl. `Downloads.download` is Downloads' own and calls `re
 | | |
 |---|---|
 | **Methods and bodies** | GET, HEAD, PUT, POST and other methods. Bodies to a path, an `IO` or nowhere; request bodies from a path or an `IO`. A path body is streamed to the file by the host. |
-| **Headers** | Request headers, including Downloads' default `User-Agent`. The response's headers with lower-case names, `set-cookie` entries kept apart. |
+| **Headers** | Request headers, including Downloads' default `User-Agent`. `name => nothing` sends no such header; for `User-Agent` the host then sends its own (Node's `fetch`: `node`), where libcurl sends none. The response's headers with lower-case names, `set-cookie` entries kept apart. |
 | **Redirects** | Followed. `Response.url` is the final URL. |
 | **Errors** | A non-2xx `download` is a `RequestError` with code 0 and the response. A transport failure is a `RequestError` with libcurl's code (6 resolve, 7 connect, 28 timeout, 47 too many redirects, 60 TLS, else 56) and status 0. `request(throw = false)` returns it. |
 | **Progress** | One call at the end with the complete transfer: `(Content-Length or 0, bytes received)`, as libcurl's last call. |

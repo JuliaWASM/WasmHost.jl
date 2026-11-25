@@ -55,6 +55,36 @@ function request_text(url::String, method::String, headers::Vector{Pair{String,S
 end
 
 """
+    timeout_seconds(timeout) -> Float64
+
+The `timeout` keyword of `Downloads.request` in seconds (`Inf`: none), or the native method's
+`ArgumentError` for one that is not positive.
+"""
+function timeout_seconds(timeout::Real)::Float64
+    timeout > 0 || throw(ArgumentError("timeout must be positive, got $timeout"))
+    return Float64(timeout)
+end
+
+"""
+    header_pairs(headers, user_agent) -> Vector{Pair{String,String}}
+
+The `headers` keyword of `Downloads.request` as the headers to send, with `user_agent` unless
+`headers` has a `User-Agent`. `name => nothing` sends no such header (libcurl's `"Name:"`): for
+`User-Agent` that leaves the header to the host (the native method sends none; Node's `fetch`
+sends its own).
+"""
+function header_pairs(headers, user_agent::String)::Vector{Pair{String,String}}
+    hdrs = Pair{String,String}[]
+    agent = false
+    for (k, v) in headers
+        agent |= lowercase(k) == "user-agent"
+        v === nothing || push!(hdrs, String(k) => String(v))
+    end
+    agent || push!(hdrs, "User-Agent" => user_agent)
+    return hdrs
+end
+
+"""
     request(url, method, headers, input, output, timeout) -> Result
 
 Perform the request through the host. `input`/`output` are paths of the program's filesystem

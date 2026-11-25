@@ -4,7 +4,7 @@
 # test/e2e/e2e.jl.
 using Test, WasmHost
 using WasmHost: split_lines, spool_dir
-using WasmHost.Downloads: request_text, parse_result, Result
+using WasmHost.Downloads: request_text, parse_result, Result, timeout_seconds, header_pairs
 using WasmHost.Decompress: DecompressError, decompress, parse_answer
 using Base.BinaryPlatforms: HostPlatform, triplet, arch, os, libc
 
@@ -40,6 +40,21 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         @test split(request_text("u", "PUT", Pair{String,String}[], "/w/in", "", 2.5), '\n')[5:6] == ["/w/in", "2.5"]
         @test_throws ArgumentError request_text("http://h/\nx", "GET", Pair{String,String}[], "", "", Inf)
         @test_throws ArgumentError request_text("u", "GET", ["X" => "a\r\nY: b"], "", "", Inf)
+    end
+
+    # the `timeout` and `headers` keywords as the native `Downloads.request` takes them
+    @testset "Downloads: timeout and headers" begin
+        @test timeout_seconds(Inf) === Inf
+        @test timeout_seconds(3) === 3.0
+        @test timeout_seconds(1//4) === 0.25
+        for t in (0, 0.0, -1, -Inf, NaN)
+            @test_throws ArgumentError("timeout must be positive, got $t") timeout_seconds(t)
+        end
+        @test header_pairs(["X-A" => "b"], "julia") == ["X-A" => "b", "User-Agent" => "julia"]
+        @test header_pairs(Dict("user-agent" => "mine"), "julia") == ["user-agent" => "mine"]
+        # `nothing`: no such header, nor the default User-Agent in its place
+        @test header_pairs(["User-Agent" => nothing], "julia") == Pair{String,String}[]
+        @test header_pairs(["X-A" => nothing, "X-B" => ""], "julia") == ["X-B" => "", "User-Agent" => "julia"]
     end
 
     @testset "Downloads: response parsing" begin
@@ -151,6 +166,26 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             r = parse_result(split_lines(out), "http://h/x?a=1")
             @test (r.code, r.url, r.status, r.status_line) == (0, "http://h/x?a=1#final", 201, "HTTP/1.1 201 Created")
             @test r.headers == ["x-echo" => """["POST","/w/out","/w/in",3,[["X-Probe","v: w"]]]"""]
+        end
+    end
+
+    # the Node adapter's timeout: whole milliseconds for `AbortSignal.timeout`, none past a timer's range
+    @testset "JavaScript: request timeout" begin
+        if node === nothing
+            @test_skip "$runtime not found"
+        else
+            script = """
+            import { perform } from $(js("node", "http.mjs"));
+            const out = [];
+            for (const timeout of [2.5, 0.3004, 0.0001, 1e7, Infinity]) {
+              let signal;
+              const r = await perform({ method: 'GET', url: 'http://h/', headers: [], timeout },
+                { fetchImpl: async (url, init) => { signal = init.signal; return new Response(null, { status: 204 }); } });
+              out.push(r.code + (signal ? 't' : 'n'));
+            }
+            process.stdout.write(out.join(' '));
+            """
+            @test read(`$node --input-type=module -e $script`, String) == "0t 0t 0t 0n 0n"
         end
     end
 
