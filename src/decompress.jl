@@ -71,10 +71,10 @@ end
 
 Decompress the file `src` into the file `dst` (replaced if it exists) and return `dst`'s
 absolute path. `format` is `:auto` (gzip or zstd, by magic bytes), `:gzip`, `:deflate` or
-`:zstd`. Throws a [`DecompressError`](@ref) when the host doesn't complete it. A `dst` that
-this call made then doesn't exist. One that was there before is removed only by the host, once
-it has opened it for writing; until then it is left as it is (so when `dst` is `src` itself,
-also under another name, which is `EINVAL`).
+`:zstd`. Throws a [`DecompressError`](@ref) when the host doesn't complete it. The host then
+removes `dst` if it has opened it for writing, and only then: a failure before that (no
+adapter, no source, not the format's data, a `dst` that is `src` itself, also under another
+name, which is `EINVAL`) leaves a file that was there as it is.
 
 The host does the work through the spool directory. Without one (natively, or a host without
 the adapter) this is `DecompressError(ENOSYS)`: a native program decompresses with its own
@@ -83,23 +83,13 @@ tools.
 function decompress(src::AbstractString, dst::AbstractString; format::Symbol = :auto)::String
     fmt = format_name(format)
     s, d = String(abspath(src)), String(abspath(dst))
-    # (a source that doesn't exist is the host's ENOENT, also when `dst` names it too)
-    s == d && ispath(s) && throw(DecompressError(EINVAL, "the source and the destination are the same file"))
     isempty(spool_dir()) &&
         throw(DecompressError(ENOSYS, "this host provides no decompression (WASMHOST_SPOOL is not set)"))
-    # (a `d` that is there already, a dangling link too, is not this call's to remove: it may be the
-    # source under another name, or a file the host never opened)
-    made = !ispath(d) && !islink(d)
+    # (`d` is the host's: it knows whether it opened it, and removes what it left unfinished)
     text = spool_exchange(request_text(s, d, fmt), ".dreq", ".dres")
-    if text === nothing
-        made && rm(d; force = true)
-        throw(DecompressError(ENOSYS, "no answer from the host (is its adapter installed?)"))
-    end
+    text === nothing && throw(DecompressError(ENOSYS, "no answer from the host (is its adapter installed?)"))
     errno, msg = parse_answer(split_lines(text))
-    if errno != 0
-        made && rm(d; force = true)
-        throw(DecompressError(errno, msg))
-    end
+    errno == 0 || throw(DecompressError(errno, msg))
     return d
 end
 
