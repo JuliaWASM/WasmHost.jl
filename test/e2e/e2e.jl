@@ -63,15 +63,18 @@ end
 
 lines(s, prefix) = filter(l -> startswith(l, prefix), split(s, '\n'))
 
-# a run the runner skipped (an engine gap it names, `SKIP: …`, and exit code 77: the line without the code is a
-# runner that failed), reported as such; with E2E_ALLOW_SKIP=0, a failure (the caller's: `ok &= ALLOW_SKIP`)
+# a run the runner skipped (an engine gap it names, `SKIP: …`, and exit code 77), reported as such; with
+# E2E_ALLOW_SKIP=0, a failure (the caller's: `ok &= ALLOW_SKIP`). The line without the code is a runner that
+# failed, whatever else it printed (`ran`).
 const ALLOW_SKIP = get(ENV, "E2E_ALLOW_SKIP", "1") == "1"
+const SKIP = r"^SKIP: (.*)$"m
 function skipped(out, code, what)
-    m = match(r"^SKIP: (.*)$"m, out)
+    m = match(SKIP, out)
     (m === nothing || code != 77) && return false
     println("== $what: SKIPPED on $runtime, an engine gap: ", m[1], ALLOW_SKIP ? "" : " (a failure: E2E_ALLOW_SKIP=0)")
     return true
 end
+ran(out, code) = code == 0 && !occursin(SKIP, out)
 
 # the output of `cmd`, stdout and stderr together, and its exit code (-1 if a signal ended it)
 function output(cmd)
@@ -98,13 +101,15 @@ function downloads(env, transport)
     print("native:\n", native)
     # the downloaded file's size and digest, as native.mjs and run.mjs print them
     blob(s) = (m = match(r"^blob\.bin: \d+ bytes, sha256 [0-9a-f]{64}"m, s); m === nothing ? nothing : m.match)
-    ok = !isempty(lines(native, "T")) && blob(native) !== nothing
+    # what `main` returned, as both print it
+    rc(s) = (m = match(r"^main returned (-?\d+)"m, s); m === nothing ? nothing : m[1])
+    ok = !isempty(lines(native, "T")) && blob(native) !== nothing && rc(native) !== nothing
     wasm = joinpath(work, "fetch-$transport.wasm")
     build(env, wasm, transport, "fetch")
     for mode in (transport == "import" ? ["import"] : ["jspi", "sync"])
         out, code = output(`$node $NODE_FLAGS $(joinpath(HERE, "run.mjs")) $wasm $mode $(joinpath(work, mode))`)
         skipped(out, code, "$transport/$mode") && (ok &= ALLOW_SKIP; continue)
-        same = code == 0 && lines(out, "T") == lines(native, "T") && blob(out) == blob(native) &&
+        same = ran(out, code) && rc(out) == rc(native) && lines(out, "T") == lines(native, "T") && blob(out) == blob(native) &&
                occursin("identical to the server's: true", out) && occursin("spool files left: 0", out)
         println("== $transport/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
         ok &= same
@@ -155,7 +160,7 @@ function decompression(env)
         out, code = output(addenv(`$node $NODE_FLAGS $(joinpath(HERE, "drun.mjs")) $wasm $mode $dir $indir`, "E2E_PLATFORM" => platform))
         skipped(out, code, "decompress/$mode") && (ok &= ALLOW_SKIP; continue)
         bytes = [f => (isfile(joinpath(dir, "out", f)) && read(joinpath(dir, "out", f)) == ref) for f in ("gz.tar", "zst.tar", "zz.tar", "gz2.tar")]
-        same = code == 0 && lines(out, "D") == want && all(last, bytes) && lines(out, "P") == lines(pnative, "P") &&
+        same = ran(out, code) && lines(out, "D") == want && all(last, bytes) && lines(out, "P") == lines(pnative, "P") &&
                occursin("spool files left: 0", out)
         println("== decompress/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "; bytes equal to native: ", bytes, "\n", out)
         ok &= same
@@ -173,7 +178,7 @@ function page(env)
         wasm = joinpath(work, "page-$host.wasm")
         build(env, wasm, host, "page")
         out, code = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)
-        same = code == 0 && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
+        same = ran(out, code) && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
                (host == "js" || lines(out, "R") == want("R"))
         println("== page/$host: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
         ok &= same
