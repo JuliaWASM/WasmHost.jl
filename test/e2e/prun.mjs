@@ -36,13 +36,16 @@ if (host === 'wasi') {
 
 const posted = [...SIZES.map((n, k) => pattern(n, 100 + k + 1)), ...LENGTHS.map((n, k) => utf8(text(n, 10 + k + 1)))];
 const both = host === 'wasi';
+let rc;
 if (both) {
   SIZES.forEach((n, k) => page.post(pattern(n, 100 + k + 1)));
   LENGTHS.forEach((n, k) => page.post(text(n, 10 + k + 1)));   // (a string: posted as UTF-8)
-  exports.main();
+  rc = exports.main();
 } else {
-  exports.main_send();
+  rc = exports.main_send();
 }
+// (what the program returned, `main_send` as `main`: e2e.jl compares it with the native run's)
+console.log(`main returned ${rc}`);
 const expected = [...SIZES.map((n, k) => pattern(n, k + 1)), ...LENGTHS.map((n, k) => utf8(text(n, k + 1))), ...(both ? posted : [])];
 const ok = received.length === expected.length && received.every((m, i) => same(m, expected[i])) &&
            page.queued() === 0 && (!both || page.stats.received === posted.length);

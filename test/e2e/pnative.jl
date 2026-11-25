@@ -7,8 +7,9 @@ using .PageProg: PageProg, Page, SIZES, LENGTHS, pattern, text
 posted = vcat([pattern(n, 100 + k) for (k, n) in enumerate(SIZES)],
               [Vector{UInt8}(codeunits(text(n, 10 + k))) for (k, n) in enumerate(LENGTHS)])
 append!(Page.native_inbox(), copy.(posted))
-PageProg.main()
+rc = PageProg.main()
 sent = Page.native_outbox()
 expected = vcat([pattern(n, k) for (k, n) in enumerate(SIZES)],
                 [Vector{UInt8}(codeunits(text(n, k))) for (k, n) in enumerate(LENGTHS)], posted)
 println("page check: ", sent == expected, " (", length(sent), " messages)")
+println("main returned ", rc)

@@ -75,6 +75,9 @@ function skipped(out, code, what)
     return true
 end
 ran(out, code) = code == 0 && !occursin(SKIP, out)
+# what `main` returned, as the runner (and the native run) prints it once `main` is back: the last such line, as the
+# program's own output comes before it
+rc(out) = (ms = collect(eachmatch(r"^main returned (-?\d+)"m, out)); isempty(ms) ? nothing : ms[end][1])
 
 # the output of `cmd`, stdout and stderr together, and its exit code (-1 if a signal ended it)
 function output(cmd)
@@ -101,8 +104,6 @@ function downloads(env, transport)
     print("native:\n", native)
     # the downloaded file's size and digest, as native.mjs and run.mjs print them
     blob(s) = (m = match(r"^blob\.bin: \d+ bytes, sha256 [0-9a-f]{64}"m, s); m === nothing ? nothing : m.match)
-    # what `main` returned, as both print it
-    rc(s) = (m = match(r"^main returned (-?\d+)"m, s); m === nothing ? nothing : m[1])
     ok = !isempty(lines(native, "T")) && blob(native) !== nothing && rc(native) !== nothing
     wasm = joinpath(work, "fetch-$transport.wasm")
     build(env, wasm, transport, "fetch")
@@ -173,12 +174,12 @@ function page(env)
     native, code = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl"))`)
     print("native:\n", native)
     want(prefix) = lines(native, prefix)
-    ok = code == 0 && occursin("page check: true", native)
+    ok = code == 0 && occursin("page check: true", native) && rc(native) !== nothing
     for host in ("wasi", "js")
         wasm = joinpath(work, "page-$host.wasm")
         build(env, wasm, host, "page")
         out, code = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)
-        same = ran(out, code) && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
+        same = ran(out, code) && rc(out) == rc(native) && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
                (host == "js" || lines(out, "R") == want("R"))
         println("== page/$host: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
         ok &= same
