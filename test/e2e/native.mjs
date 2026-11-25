@@ -8,8 +8,14 @@ const port = await new Promise((res) => server.stdout.on('data', (d) => { const 
 try {
   const dir = path.dirname(new URL(import.meta.url).pathname);
   const r = spawnSync(process.env.JULIA, ['--startup-file=no', '--project=' + process.env.E2E_PROJECT, '-e',
-    `include(${JSON.stringify(path.join(dir, 'prog.jl'))}); t = time(); FetchProg.main(); println(stderr, "main took ", round(Int, 1000(time() - t)), " ms (first call, includes compilation)")`],
+    `include(${JSON.stringify(path.join(dir, 'prog.jl'))}); t = time(); rc = FetchProg.main(); println(stderr, "main took ", round(Int, 1000(time() - t)), " ms (first call, includes compilation)"); println("main returned ", rc)`],
     { env: { ...process.env, FETCH_BASE: `http://127.0.0.1:${port}`, FETCH_OUT: path.join(work, 'out') }, stdio: 'inherit' });
-  const b = fs.readFileSync(path.join(work, 'out', 'blob.bin'));
-  console.error(`native rc ${r.status}; blob.bin: ${b.length} bytes, sha256 ${crypto.createHash('sha256').update(b).digest('hex')}`);
+  console.error(`native rc ${r.status}`);
+  // (a native run that failed is no reference: e2e.jl stops on this exit code, Julia's)
+  if (r.status !== 0) process.exitCode = r.status ?? 1;
+  else {
+    const b = fs.readFileSync(path.join(work, 'out', 'blob.bin'));
+    // (on stdout, as `main returned N` is: e2e.jl compares these lines with run.mjs's)
+    console.log(`blob.bin: ${b.length} bytes, sha256 ${crypto.createHash('sha256').update(b).digest('hex')}`);
+  }
 } finally { server.kill(); }

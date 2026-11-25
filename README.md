@@ -1,7 +1,7 @@
 # WasmHost.jl
 
 Host capabilities for Julia programs compiled to WebAssembly by
-[WasmCodegen.jl](https://github.com/gbaraldi/WasmCodegen.jl): what a WASI host doesn't provide,
+[WasmCodegen.jl](https://github.com/JuliaWASM/WasmCodegen.jl): what a WASI host doesn't provide,
 performed by the JavaScript host around the module. Natively nothing changes.
 
 | Module | What | How the program uses it |
@@ -35,7 +35,7 @@ WasmHost.jl was called WasmFetch.jl until it gained decompression and platform t
 - **The import transport.** A `wasm_host.http_request` import, for downloads only. It needs
   WasmCodegen to let a program declare an import library of its own,
   `Config(import_libraries = ["wasm_host"])`
-  ([gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57), merged on
+  ([JuliaWASM/WasmCodegen.jl#57](https://github.com/JuliaWASM/WasmCodegen.jl/pull/57), merged on
   2026-11-05). It also uses WasmCodegen's staging area of the linear memory
   (`Runtime.Staging`) to pass the request and response text. CI's end-to-end test runs it
   against the WasmCodegen commit the workflow pins.
@@ -105,16 +105,17 @@ WasmHost.Decompress.decompress(src, dst; format = :auto)   # -> abspath(dst)
 
 Pkg decompresses by running processes: `get_extract_cmd` pipes `7z` or `zstd` into Tar, under
 `unpack`, `download_verify_unpack`, `verify_archive_tree_hash` and the registry's
-`uncompress_registry`. A Wasm module can't run them, so a Wasm build of Pkg routes those call
-sites through a seam of its own, which stays in that build:
+`uncompress_registry`. A Wasm module can't run them. A package extension, `WasmHostPkgExt`
+(loaded when Pkg and WasmCodegen are both loaded), overlays two methods in the compiled module
+(for Julia 1.13's Pkg: 1.12's has no `get_extract_cmd`):
 
-- `with_decompressed(f, tarball)` decompresses `tarball` into a fresh temporary file with the
-  seam's `decompress(src, dst)`, calls `f` with the tar's path, and removes the file;
-- the seam's Wasm `decompress(src, dst)` calls `WasmHost.Decompress.decompress(src, dst)` and
-  maps a `DecompressError` to the build's own error type;
-- natively the seam keeps Pkg's processes.
+- `Pkg.PlatformEngines.get_extract_cmd(path)` returns a command that only names the file,
+  `wasm-decompress <path>`;
+- `open(f, cmd::Cmd)` of such a command decompresses the file with
+  `WasmHost.Decompress.decompress` into a temporary file next to it, calls `f` on that file, and
+  removes it. Of any other command it is an `ArgumentError`: a module can't run a process.
 
-WasmHost overlays nothing of Pkg.
+Natively Pkg keeps its processes. No end-to-end test covers the extension yet.
 
 ## Platform
 
@@ -176,8 +177,9 @@ page.post(new TextEncoder().encode('{"zoom": 3}'));   // read by the program's n
   through WasmCodegen's staging area (`Runtime.Staging`), in chunks of at most 1 MiB, so they
   are for `host = :wasi` only: WasmCodegen's bytes arguments go from the module to the host, and
   a module for JavaScript that calls them doesn't compile.
-- **Hosts:** Node 24 or newer, or Bun 1.4 or newer (tested with Node 24 and 26 and Bun 1.4).
-  No JSPI and no flags are needed, because the page functions don't suspend. `page.mjs` uses no
+- **Hosts:** Node 24.20 or newer, or Bun 1.4 or newer (tested with Node 24 and 26 and Bun 1.4).
+  No JSPI is needed, because the page functions don't suspend, so an older Node 24 works too:
+  before 24.15 with `--experimental-wasm-exnref`, for WasmCodegen's modules. `page.mjs` uses no
   Node API, so a browser should work too, but none has been tested.
 - **Natively** there is no page: `send` keeps a copy in `Page.native_outbox()`, and `receive`
   takes from `Page.native_inbox()`, which a test fills.
@@ -208,10 +210,12 @@ To migrate:
 - Julia 1.12 or 1.13.
 - A WasmCodegen with WASI support for `Config(host = :wasi)`: the filesystem and the
   environment (`ENV`). Upstream `main` has both.
-- Node 24 or newer for the Node adapter, or Bun. The `jspi` mode needs JavaScript Promise
-  Integration (`WebAssembly.Suspending` and `WebAssembly.promising`), which Node 24 and later
-  have without a flag. (Node 22 has only the older JSPI API, behind a flag the adapter
-  doesn't use, and Node 26 rejects the flag: don't pass it.)
+- Node 24.20 or newer for the Node adapter, or Bun. The `jspi` mode needs JavaScript Promise
+  Integration (`WebAssembly.Suspending` and `WebAssembly.promising`), and WasmCodegen's modules
+  use `exnref`: Node 24.20 and later have both without a flag (`exnref` since 24.15, JSPI since
+  24.20). An earlier Node 24 needs `--experimental-wasm-jspi`, and before 24.15
+  `--experimental-wasm-exnref`. (Node 22 has only the older JSPI
+  API, and Node 26 rejects the JSPI flag: don't pass it there.)
 
 ## Building
 
@@ -229,10 +233,11 @@ write("main.wasm", c.bytes)
 
 **`verify = :error` passes** for programs that use the Downloads extension: WasmCodegen's trim
 verifier checks overlaid methods with the module's own inference
-([gbaraldi/WasmCodegen.jl#60](https://github.com/gbaraldi/WasmCodegen.jl/pull/60)). The
-end-to-end test builds its `fetch` program with `verify = :error`, in both transports; its
-`decompress` program, which isn't built in CI (it needs the removed `julia_regex` host
-extension), still uses `:warn`.
+([JuliaWASM/WasmCodegen.jl#60](https://github.com/JuliaWASM/WasmCodegen.jl/pull/60)). The
+end-to-end test builds its `fetch` program with `verify = :error`, in both transports. Its
+`decompress` program isn't built in CI and doesn't compile at present: it needs a regex engine
+in the module (see [Platform](#platform)), and the test sets none up since WasmCodegen's
+`julia_regex` host extension was removed.
 
 **The import transport:** also define `WasmHost.transport() = :import` before compiling, and
 pass `import_libraries = ["wasm_host"]` to `Config`. `transport` is a function rather than a
@@ -270,8 +275,8 @@ protocols in `js/common/`. See [`js/README.md`](js/README.md).
 
 | Host | Future package | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|
-| **Node** 24+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
-| **Browsers** | `@wasmhost/browser` (`js/browser/`, not written) | import intended; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **No.** Design notes only: not supported until something has run in a browser |
+| **Node** 24.20+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
+| **Browsers** | `@wasmhost/browser` (`js/browser/`: only `page.mjs`, the page messages) | import intended; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **No.** Design notes only: not supported until something has run in a browser |
 | **workerd** | – | import fits; no filesystem | `DecompressionStream` | – | JSPI, if available | **No** (`js/workerd/`) |
 | **wasmtime** | – | CLI: no (needs a helper process and polling); import from an embedding | the embedding's | the embedding's | the embedding's | **No** (`js/wasmtime/`) |
 
@@ -298,7 +303,8 @@ Expect to update this package when either changes.
   - `decompress`: `test/e2e/dprog.jl` on a real artifact tarball, gzip and zstd as the Pkg
     server serves it, and deflate. The bytes must equal what native Pkg's own decompressors
     (`get_extract_cmd`: 7z, zstd) give, whose tree hash is the artifact's. Error cases, and
-    the platform lines against the native run.
+    the platform lines against the native run. It doesn't build at present (no regex engine
+    is set up for its program) and CI doesn't run it.
 
   - `page`: `test/e2e/pprog.jl` sends patterns of 0, 1, 7, 1 KiB, 64 KiB and 1 MiB + 1 bytes
     and UTF-8 strings (up to 1.2 MB), and sends back what the host posts (`prun.mjs`). Its
