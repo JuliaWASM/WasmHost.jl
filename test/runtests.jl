@@ -42,7 +42,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         tline(t) = split(request_text("u", "GET", Pair{String,String}[], "", "", t), '\n')[6]
         @test (tline(Inf), tline(2.5), tline(3), tline(1//4), tline(0.0004)) == ("inf", "2.5", "3.0", "0.25", "inf")
         @test_throws ArgumentError("timeout must be positive, got 0.0") tline(0.0)
-        withenv("WASMHOST_SPOOL" => nothing) do
+        withenv(NOSPOOL...) do
             for t in (Inf, 2.5, 3)
                 @test WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", t).code == 2
             end
