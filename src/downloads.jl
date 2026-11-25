@@ -9,7 +9,7 @@ Protocol `wasm-fetch 1` (UTF-8 text, one field per line, no line breaks inside a
 `<spool>/<id>.req` and `<spool>/<id>.res`, or in the buffers of `wasm_host.http_request`:
 
     request:  "wasm-fetch 1", method, url, output path ("" = discard the body),
-              input path ("" = no body), timeout in milliseconds (0 = none), then "name: value" headers
+              input path ("" = no body), timeout in seconds ("inf"), then "name: value" headers
     response: "wasm-fetch 1", code (0 = a response, else a libcurl error code), error message,
               final url (after redirects), status, status line ("HTTP/1.1 200 OK"),
               then "name: value" headers of the final response (names in lower case)
@@ -37,7 +37,9 @@ no_host(url::String, msg::String) = Result(2, string("wasm-fetch: ", msg), url, 
 """
     request_text(url, method, headers, input, output, timeout_ms) -> String
 
-The text of a request. Throws an `ArgumentError` for a field with a line break.
+The text of a request. Throws an `ArgumentError` for a field with a line break. The timeout
+goes in seconds ("inf" for 0, none), the protocol's unit: the host gets the milliseconds back
+by rounding a thousand times that number.
 """
 function request_text(url::String, method::String, headers::Vector{Pair{String,String}},
                       input::String, output::String, timeout_ms::Int64)::String
@@ -47,7 +49,7 @@ function request_text(url::String, method::String, headers::Vector{Pair{String,S
     println(io, field(url, "url"))
     println(io, field(output, "output path"))
     println(io, field(input, "input path"))
-    println(io, timeout_ms)
+    println(io, timeout_ms == 0 ? "inf" : string(timeout_ms / 1000))
     for (k, v) in headers
         println(io, field(k, "header name"), ": ", field(v, "header value"))
     end
@@ -79,7 +81,8 @@ The `headers` keyword of `Downloads.request` as the headers to send, with `user_
 `headers` has a `User-Agent`. `name => nothing` sends no such header (libcurl's `"Name:"`): for
 a header the host's `fetch` adds itself, as `User-Agent` and `Accept`, that leaves it to the
 host (the native method sends none; Node's `fetch` sends its own). An entry that is not such a
-pair is the native method's `ArgumentError`.
+pair is the native method's `ArgumentError`, and so is a NUL in a header, sent or not (natively
+it is given to libcurl as a C string either way).
 """
 function header_pairs(headers, user_agent::String)::Vector{Pair{String,String}}
     hdrs = Pair{String,String}[]
@@ -88,6 +91,9 @@ function header_pairs(headers, user_agent::String)::Vector{Pair{String,String}}
         hdr isa Pair{<:AbstractString,<:Union{AbstractString,Nothing}} ||
             throw(ArgumentError("invalid header: $(repr(hdr))"))
         k, v = hdr
+        # (libcurl's form of the header: `Name:` sends none, `Name;` one without a value)
+        line = v === nothing ? "$k:" : isempty(v) ? "$k;" : "$k: $v"
+        occursin('\0', line) && throw(ArgumentError("embedded NULs are not allowed in C strings: $(repr(line))"))
         agent |= lowercase(k) == "user-agent"
         v === nothing || push!(hdrs, String(k) => String(v))
     end

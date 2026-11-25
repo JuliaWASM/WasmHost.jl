@@ -76,6 +76,9 @@ module contains no libcurl. `Downloads.download` is Downloads' own and calls `re
 - **Content-Encoding:** `fetch` decodes a compressed response (gzip, deflate, br and, in newer
   runtimes, zstd) itself, and browsers don't let a program set `Accept-Encoding`. libcurl, as
   Downloads uses it, writes the raw bytes.
+- **A timeout while the body arrives:** the error (code 28) has status 0 and no headers, and
+  an `IO` output gets nothing. libcurl's has the response's status and headers, and the output
+  what had arrived.
 - **Redirect limit:** `fetch`'s is 20, where Downloads asks libcurl for 50.
 - **Waiting with Julia Tasks:** a request blocks the whole module: other Julia tasks don't run
   while it waits. Concurrent requests would need the host's event loop to wait on request

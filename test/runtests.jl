@@ -36,8 +36,8 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
 
     @testset "Downloads: request text" begin
         t = request_text("http://h/x", "GET", ["Accept" => "*/*", "X-A" => "b c"], "", "/w/out.bin", 0)
-        @test t == "wasm-fetch 1\nGET\nhttp://h/x\n/w/out.bin\n\n0\nAccept: */*\nX-A: b c\n"
-        @test split(request_text("u", "PUT", Pair{String,String}[], "/w/in", "", 2500), '\n')[5:6] == ["/w/in", "2500"]
+        @test t == "wasm-fetch 1\nGET\nhttp://h/x\n/w/out.bin\n\ninf\nAccept: */*\nX-A: b c\n"
+        @test split(request_text("u", "PUT", Pair{String,String}[], "/w/in", "", 2500), '\n')[5:6] == ["/w/in", "2.5"]
         @test_throws ArgumentError request_text("http://h/\nx", "GET", Pair{String,String}[], "", "", 0)
         @test_throws ArgumentError request_text("u", "GET", ["X" => "a\r\nY: b"], "", "", 0)
     end
@@ -61,6 +61,10 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         # `nothing`: no such header, nor the default User-Agent in its place
         @test header_pairs(["User-Agent" => nothing], "julia") == Pair{String,String}[]
         @test header_pairs(["X-A" => nothing, "X-B" => ""], "julia") == ["X-B" => "", "User-Agent" => "julia"]
+        # a NUL, also in the name of a header that is not sent: the native method's error for its C string
+        for (h, line) in (("X\0A" => nothing, "X\0A:"), ("X\0A" => "b", "X\0A: b"), ("X" => "a\0b", "X: a\0b"), ("X\0" => "", "X\0;"))
+            @test_throws ArgumentError("embedded NULs are not allowed in C strings: $(repr(line))") header_pairs([h], "julia")
+        end
         # an entry that is not a pair of a name and a value or `nothing`
         for h in (("X", nothing), "X" => 1, :X => "a", "X: a")
             @test_throws ArgumentError("invalid header: $(repr(h))") header_pairs([h], "julia")
@@ -175,11 +179,12 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             out = read(`$node --input-type=module -e $script $req`, String)
             r = parse_result(split_lines(out), "http://h/x?a=1")
             @test (r.code, r.url, r.status, r.status_line) == (0, "http://h/x?a=1#final", 201, "HTTP/1.1 201 Created")
-            @test r.headers == ["x-echo" => """["POST","/w/out","/w/in",3000,[["X-Probe","v: w"]]]"""]
+            @test r.headers == ["x-echo" => """["POST","/w/out","/w/in",3,[["X-Probe","v: w"]]]"""]
         end
     end
 
-    # the Node adapter's timeout: the request's milliseconds; none for 0, nor past a timer's range
+    # the Node adapter's timeout: the milliseconds Julia made the request's seconds from; none for 0, nor past a
+    # timer's range
     @testset "JavaScript: request timeout" begin
         if node === nothing
             @test_skip "$runtime not found"
@@ -197,10 +202,22 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             // (and it is that many: a response after 300 ms, with 20 ms and with 2 s)
             const slow = () => new Promise((resolve) => setTimeout(() => resolve(new Response(null, { status: 204 })), 300));
             const late = (init) => new Promise((resolve, reject) => { slow().then(resolve); init.signal.addEventListener('abort', () => reject(init.signal.reason)); });
-            for (const timeout of [20, 2000])
+            for (const timeout of [0.02, 2])
               out.push((await perform({ method: 'GET', url: 'http://h/', headers: [], timeout }, { fetchImpl: (url, init) => late(init) })).code);
             process.stdout.write(out.join(' '));
             """
+            # the adapter gets back the milliseconds that went into a request's seconds, exactly
+            script2 = """
+            import fs from 'node:fs';
+            import { parseRequest } from $(js("common", "fetch.mjs"));
+            import { timeoutMs } from $(js("node", "http.mjs"));
+            process.stdout.write(fs.readFileSync(process.argv.at(-1), 'utf8').split('\\0').map((t) => timeoutMs(parseRequest(t))).join(' '));
+            """
+            ms = Int64[1:3000; 2147483000 .+ (-3:0); 2147483647; 2147483647 .+ (1:3); 1000 .* (2147484:2147490); 2147483647000;
+                       [powermod(7, k, 2147483647) for k in 1:2000]; [1000 * powermod(7, k, 2147483647) for k in 1:500]]
+            file = joinpath(mktempdir(), "requests")
+            write(file, join((request_text("http://h/", "GET", Pair{String,String}[], "", "", m) for m in ms), '\0'))
+            @test parse.(Int64, split(read(`$node --input-type=module -e $script2 $file`, String))) == ms
             reqs = [request_text("http://h/", "GET", Pair{String,String}[], "", "", timeout_ms(t))
                     for t in (2.5, 0.3004, 0.0001, 2147483, 1e7, Inf)]
             @test read(`$node --input-type=module -e $script $reqs`, String) == "0t 0t 0n 0t 0n 0n 28 0"
