@@ -17,9 +17,9 @@
 //   - 'jspi': `path_open` is a `WebAssembly.Suspending`: the module waits with its stack
 //     suspended; exports that download or decompress must be called through
 //     `WebAssembly.promising` (Node 24+ and Bun have it on by default).
-//   - 'sync': the work runs on a worker thread while the main thread blocks in `Atomics.wait`,
-//     without a timeout: a worker that dies before it takes a job (e.g. a `--require` preload
-//     that fails in it) can't be told from one still working, and the module then hangs.
+//   - 'sync': the work runs on a worker thread while the main thread blocks in `Atomics.wait`.
+//     The wait has no timeout: a worker that dies before it takes a job (e.g. a `--require`
+//     preload that fails in it) can't be told from one still working, and the module then hangs.
 // `fetchImpl` replaces `fetch` (jspi mode only; e.g. to refuse all requests).
 
 import fs from 'node:fs';
