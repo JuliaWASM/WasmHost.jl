@@ -106,6 +106,12 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
     return { kind: 'decompress', srcHost: map.toHost(d.src), dstHost: map.toHost(d.dst), format: d.format, resHost: p.resHost };
   }
 
+  // the response to a request that `prepare` refused. (Never an exception of `path_open`: if
+  // the response can't be written, the module finds none, as when a job fails.)
+  function refuse(p, err) {
+    try { fs.writeFileSync(p.resHost, failure(p.kind, err)); } catch {}
+  }
+
   let path_open;
   if (mode === 'jspi') {
     if (typeof WebAssembly.Suspending !== 'function')
@@ -115,8 +121,8 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
       if (p === null) return original(...args);
       return (async () => {
         let job;
-        try { job = prepare(p); } catch (err) { fs.writeFileSync(p.resHost, failure(p.kind, err)); return original(...args); }
-        await serve(job, { fetchImpl });
+        try { job = prepare(p); } catch (err) { refuse(p, err); return original(...args); }
+        try { await serve(job, { fetchImpl }); } catch {}
         return original(...args);
       })();
     });
@@ -128,7 +134,7 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
       const p = pending(args[0], args[2], args[3]);
       if (p === null) return original(...args);
       let job;
-      try { job = prepare(p); } catch (err) { fs.writeFileSync(p.resHost, failure(p.kind, err)); return original(...args); }
+      try { job = prepare(p); } catch (err) { refuse(p, err); return original(...args); }
       worker ??= workerFor(sab);
       Atomics.store(flag, 0, 0);
       worker.postMessage(job);

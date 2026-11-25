@@ -100,17 +100,20 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         end
         # (nothing left behind; the destination that was there, which no host opened, is as it was)
         @test isempty(readdir(spool)) && read(dst, String) == "old"
-        # the source as the destination: refused, and still there
-        e = try decompress(src, joinpath(dir, ".", "a.gz")) catch e; e end
-        @test e isa DecompressError && e.errno == 28 && read(src, String) == "x"
         withenv("WASMHOST_SPOOL" => spool) do
-            # (under another name, and no host to find that out: no answer, and still there)
+            # the source as the destination, also under another name, is the host's to refuse (EINVAL): with no
+            # host, no answer, and the file is still there
             symlink("a.gz", joinpath(dir, "alias.gz"))
-            e = try decompress(joinpath(dir, "alias.gz"), src) catch e; e end
-            @test e isa DecompressError && e.errno == 52 && read(src, String) == "x"
-            # a source that doesn't exist, as the destination too: the host's to answer (ENOENT), as for any missing source
-            e = try decompress(joinpath(dir, "none.gz"), joinpath(dir, "none.gz")) catch e; e end
-            @test e isa DecompressError && e.errno == 52
+            for d in (joinpath(dir, ".", "a.gz"), joinpath(dir, "alias.gz"))
+                e = try decompress(src, d) catch e; e end
+                @test e isa DecompressError && e.errno == 52 && read(src, String) == "x"
+            end
+            # a destination Julia couldn't look at or remove is no other error: a link to itself, a name under a file
+            symlink("loop", joinpath(dir, "loop"))
+            for d in (joinpath(dir, "loop"), joinpath(dst, "child"))
+                e = try decompress(src, d) catch e; e end
+                @test e isa DecompressError && e.errno == 52
+            end
         end
     end
 
@@ -223,39 +226,86 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         end
     end
 
-    # a guest path to the host's: inside its preopen also once symbolic links are followed
+    # a guest path to the host's: the file node:wasi gives the module for it, and inside its preopen also
+    # once symbolic links are followed
     @testset "JavaScript: preopens and symbolic links" begin
         if node === nothing
             @test_skip "$runtime not found"
         else
             script = """
-            import fs from 'node:fs'; import path from 'node:path';
+            import fs from 'node:fs'; import path from 'node:path'; import { WASI } from 'node:wasi';
             import { makeMapper } from $(js("node", "paths.mjs"));
             const dir = fs.realpathSync(process.argv.at(-1)), box = path.join(dir, 'box'), out = path.join(dir, 'outside');
-            fs.mkdirSync(path.join(box, 'sub'), { recursive: true }); fs.mkdirSync(out);
+            fs.mkdirSync(path.join(box, 'sub', 'deep'), { recursive: true }); fs.mkdirSync(out);
             fs.writeFileSync(path.join(out, 'secret'), 's');
+            for (const d of ['', 'sub', 'sub/deep']) fs.writeFileSync(path.join(box, d, 'file'), d);
             fs.symlinkSync(out, path.join(box, 'dir'));                       // a directory outside
             fs.symlinkSync(path.join(out, 'new'), path.join(box, 'dangling'));  // a file outside that doesn't exist yet
             fs.symlinkSync('../outside/secret', path.join(box, 'relative'));
             fs.symlinkSync('sub', path.join(box, 'inside'));
             fs.symlinkSync('loop', path.join(box, 'loop'));
-            // as the kernel: a `..` after a name that doesn't exist, a name (or a slash) after a file
-            fs.writeFileSync(path.join(box, 'file'), 'f');
+            // `..` is taken out as text: after a link to a directory, after a name that doesn't exist, in a
+            // link's target, and from a link reached through another
+            fs.symlinkSync('sub/deep', path.join(box, 'alias'));
             fs.symlinkSync('absent/../file', path.join(box, 'updown'));
+            fs.symlinkSync('alias/../file', path.join(box, 'viaalias'));
+            fs.symlinkSync('../file', path.join(box, 'sub', 'deep', 'up'));
+            // a name (or a slash) after a file; a slash after a name that doesn't exist
             fs.symlinkSync('file/', path.join(box, 'slash'));
-            // (a preopen named with a trailing slash, and a relative host directory)
+            fs.symlinkSync('fresh/', path.join(box, 'tofresh'));
+            fs.symlinkSync('nowhere/x', path.join(box, 'gone'));
+            // an absolute target is a guest path
+            fs.symlinkSync(path.join(box, 'file'), path.join(box, 'hostabs'));
+            fs.symlinkSync('/work/file', path.join(box, 'guestabs'));
+            const paths = ['', 'a/b', 'inside/x', 'dir/x', 'dir/secret', 'dangling', 'relative', '../x', 'loop',
+                           'alias/file', 'alias/../file', 'absent/../file', 'updown', 'viaalias', 'alias/up',
+                           'slash', 'file/x', 'file/', 'file', 'tofresh', 'fresh/', 'gone/', 'gone/y', 'hostabs', 'guestabs'];
+            // (a preopen named with a trailing slash, and a relative host directory; then one through a link and a `..`)
             process.chdir(dir);
-            const map = makeMapper({ '/work/': 'box' });
-            // (the preopen is the directory it was when the mapper was made)
-            process.chdir(out);
-            const r = [map.preopenOf(3)];
-            for (const g of ['/work', '/work/a/b', '/work/inside/x', '/work/dir/x', '/work/dir/secret', '/work/dangling', '/work/relative', '/work/../x', '/work/loop',
-                             '/work/updown', '/work/slash', '/work/file/x', '/work/file/', '/work/file'])
-              try { r.push(path.relative(dir, map.toHost(g)).split(path.sep).join('/')); } catch (e) { r.push(e.code); }
+            const r = [];
+            for (const [pre, wasi] of [['box', false], ['box', true], ['box/alias/..', true]]) {
+              const preopens = { '/work/': pre };
+              const map = makeMapper(preopens);
+              if (!wasi) {
+                // (the preopen is the directory it was when the mapper was made)
+                process.chdir(out);
+                r.push(map.preopenOf(3));
+                for (const g of paths) {
+                  try { const h = map.toHost(path.posix.join('/work', g)); r.push(path.relative(dir, h).split(path.sep).join('/') + (h.endsWith(path.sep) ? '/' : '')); }
+                  catch (e) { r.push(e.code); }
+                }
+                process.chdir(dir);
+                continue;
+              }
+              // against node:wasi itself: what `path_filestat_get` finds for the path is the mapped path's file
+              // (a module with a memory only: (module (memory (export "memory") 1)))
+              const w = new WASI({ version: 'preview1', preopens, returnOnExit: true });
+              const inst = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(
+                [0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 3, 1, 0, 1, 7, 10, 1, 6, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 2, 0])), {});
+              w.initialize(inst);
+              const mem = new Uint8Array(inst.exports.memory.buffer), view = new DataView(inst.exports.memory.buffer);
+              const errno = { ELOOP: 32, ENOENT: 44, ENOTDIR: 54, EACCES: 76 };   // (76: ENOTCAPABLE)
+              const differ = [];
+              for (const g of paths.slice(1)) {
+                const b = new TextEncoder().encode(g); mem.set(b, 64);
+                const e = w.wasiImport.path_filestat_get(3, 1, 64, b.length, 1024);
+                const theirs = e === 0 ? String(view.getBigUint64(1032, true)) : 'errno ' + e;
+                let ours;
+                try { ours = String(fs.statSync(map.toHost('/work/' + g), { bigint: true }).ino); } catch (err) { ours = 'errno ' + errno[err.code]; }
+                if (ours !== theirs) differ.push(g);
+              }
+              r.push('[' + differ.join(',') + ']');
+            }
             process.stdout.write(r.join(' '));
             """
-            r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
-            @test r == "/work box box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP ENOENT ENOTDIR ENOTDIR ENOTDIR box/file"
+            quiet = runtime == "node" ? `--disable-warning=ExperimentalWarning` : ``
+            r = read(`$node --input-type=module $quiet -e $script $(mktempdir())`, String)
+            @test startswith(r, "/work box box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP " *
+                                "box/sub/deep/file box/file box/file box/file box/file box/file " *
+                                "ENOTDIR ENOTDIR ENOTDIR box/file box/fresh/ box/fresh/ ENOENT ENOENT EACCES box/file [")
+            # the paths that node:wasi takes elsewhere: those through `dir` only (it follows a link in a directory to
+            # the outside; the adapter doesn't). (Node's WASI, uvwasi: another runtime's may differ.)
+            runtime == "node" && @test endswith(r, " [dir/x,dir/secret] []")
         end
     end
 
@@ -303,29 +353,35 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             // after a failed decompression it is
             fs.chmodSync(path.join(box, 'old'), 0o644); fs.writeFileSync(path.join(box, 'bad.gz'), zlib.gzipSync('hello').subarray(0, 12));
             r.push(ask(8, 'bad.gz', 'old'), old());
+            // a destination that is a link to `name/`: no regular file `name` is made
+            fs.symlinkSync('fresh/', path.join(box, 'tofresh'));
+            r.push(ask(9, 'a.gz', 'tofresh') !== 0, fs.existsSync(path.join(box, 'fresh')));
             // a spool that is itself a preopen, both named with a trailing slash
+            fs.mkdirSync(path.join(dir, 'spool'));
             wrapWasi({ path_open: () => 0 }, { preopens: { '/spool/': path.join(dir, 'spool') }, spool: '/spool/', mode: 'sync' });
             process.stdout.write(r.join(' '));
             """
             r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
-            @test startswith(r, "0 hello 28 28 28 hello none false 4 44 old ") && endswith(r, " 29 removed")
+            @test startswith(r, "0 hello 28 28 28 hello none false 4 44 old ") && endswith(r, " 29 removed true false")
             if occursin(" root ", r)
                 @test_skip "root opens a read-only file"
             else
                 @test occursin(" 2 old ", r)
             end
             # a response file that can't be written (a link to a file in a directory that doesn't exist): `path_open`
-            # returns after the job (the module then finds no response)
+            # returns after the job (the module then finds no response), and when the request is refused before
+            # there is a job (a source under a file) too
             script = prelude * """
-            fs.symlinkSync(path.join(box, 'nowhere', 'res'), path.join(spool, '1.dres'));
+            fs.symlinkSync('../nowhere/res', path.join(spool, '1.dres')); fs.symlinkSync('../nowhere/res', path.join(spool, '2.dres'));
             const r = [ask(1, 'a.gz', 'a'), host.stats.decompress, fs.readFileSync(path.join(box, 'a'), 'utf8')];
+            try { r.push(ask(2, 'a.gz/child', 'b')); } catch (e) { r.push('thrown: ' + e.code); }
             fs.writeFileSync(path.join(dir, 'returned'), r.join(' '));
             """
             dir = mktempdir()
             p = run(`$node --input-type=module -e $script $dir`; wait = false)
             timedwait(() -> process_exited(p), 60.0) === :ok || kill(p, Base.SIGKILL)
             wait(p)
-            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello"
+            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello none"
         end
     end
 
