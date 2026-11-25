@@ -4,7 +4,7 @@ The Julia side of WasmHost is host-agnostic: its modules and the protocols don't
 runtime they run on. A build only chooses the **transport** of its downloads:
 - **spool:** files of a spool directory over the WASI filesystem. Decompression always uses it.
 - **import:** the import library `wasm_host`, which needs `Config(import_libraries)`
-  ([gbaraldi/WasmCodegen.jl#57](https://github.com/gbaraldi/WasmCodegen.jl/pull/57), merged).
+  ([JuliaWASM/WasmCodegen.jl#57](https://github.com/JuliaWASM/WasmCodegen.jl/pull/57), merged).
 
 Page messages (`WasmHost.Page`, the import library `wasm_host_page`) need neither: only the
 module's memory. Their host side is `common/page.mjs` (`makePage`), the same for every host,
@@ -17,8 +17,8 @@ code in `common/`.
 | Directory | Future package | Host | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|---|
 | `common/` | (bundled into each) | any | protocol `wasm-fetch 1`, libcurl's error codes | protocol `wasm-decompress 1`, magic bytes | merging, checking, `WASMHOST_PLATFORM` | – | through Node |
-| `node/` | `@wasmhost/node` | Node 24+ and Bun 1.4+ (`node:wasi`) | spool: `spool.mjs`; import: `imports.mjs` | spool: gzip, deflate, zstd (`node:zlib`) | `platform.mjs` (arch, os, libc) | JSPI; sync worker + `Atomics.wait` (spool) | **yes**, end to end against native |
-| `browser/` | `@wasmhost/browser` | browsers | import planned; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd (planned) | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **no**: design notes, not written |
+| `node/` | `@wasmhost/node` | Node 24.21+ and Bun 1.4+ (`node:wasi`) | spool: `spool.mjs`; import: `imports.mjs` | spool: gzip, deflate, zstd (`node:zlib`) | `platform.mjs` (arch, os, libc) | JSPI; sync worker + `Atomics.wait` (spool) | **yes**, end to end against native |
+| `browser/` | `@wasmhost/browser` | browsers | import planned; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd (planned) | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **no**: `page.mjs` (the page messages, tested in Node and Bun only); the rest is design notes, not written |
 | `workerd/` | – | Cloudflare workerd | import | `DecompressionStream` | – | JSPI if available | **no**: notes |
 | `wasmtime/` | – | wasmtime | import, from an embedding | the embedding's | the embedding's | the embedding's | **no**: notes |
 
