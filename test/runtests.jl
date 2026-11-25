@@ -241,6 +241,59 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         end
     end
 
+    # the spool adapter (sync mode) as a module's `path_open` calls it, on a memory of its own
+    @testset "JavaScript: spool adapter" begin
+        if node === nothing
+            @test_skip "$runtime not found"
+        else
+            prelude = """
+            import fs from 'node:fs'; import path from 'node:path'; import zlib from 'node:zlib';
+            import { wrapWasi } from $(js("node", "spool.mjs"));
+            const dir = fs.realpathSync(process.argv.at(-1)), box = path.join(dir, 'box'), spool = path.join(box, '.wasmhost');
+            fs.mkdirSync(box);
+            const memory = new WebAssembly.Memory({ initial: 1 });
+            // (a spool directory named with a trailing slash)
+            const host = wrapWasi({ path_open: () => 0 }, { preopens: { '/work': box }, spool: '/work/.wasmhost/', mode: 'sync' });
+            host.bindMemory(memory);
+            // open `/work/.wasmhost/ID.dres` after a request to decompress /work/SRC into /work/DST: the answer's errno
+            function ask(id, src, dst) {
+              fs.writeFileSync(path.join(spool, id + '.dreq'), 'wasm-decompress 1\\n/work/' + src + '\\n/work/' + dst + '\\ngzip\\n');
+              const rel = new TextEncoder().encode('.wasmhost/' + id + '.dres');
+              new Uint8Array(memory.buffer).set(rel, 64);
+              host.wasiImport.path_open(3, 0, 64, rel.length, 0, 0n, 0n, 0, 0);
+              const res = path.join(spool, id + '.dres');
+              return fs.existsSync(res) ? Number(fs.readFileSync(res, 'utf8').split('\\n')[1]) : 'none';
+            }
+            fs.writeFileSync(path.join(box, 'a.gz'), zlib.gzipSync('hello'));
+            """
+            script = prelude * """
+            const r = [ask(1, 'a.gz', 'a'), fs.readFileSync(path.join(box, 'a'), 'utf8')];
+            // the source as the destination: by its own name, a hard link, a symbolic link
+            fs.linkSync(path.join(box, 'a.gz'), path.join(box, 'hard.gz')); fs.symlinkSync('a.gz', path.join(box, 'sym.gz'));
+            r.push(ask(2, 'a.gz', 'a.gz'), ask(3, 'a.gz', 'hard.gz'), ask(4, 'a.gz', 'sym.gz'), zlib.gunzipSync(fs.readFileSync(path.join(box, 'a.gz'))));
+            // a response file that is a link out of the preopen: not served
+            fs.symlinkSync(path.join(dir, 'outside'), path.join(spool, '5.dres'));
+            r.push(ask(5, 'a.gz', 'b'), fs.existsSync(path.join(dir, 'outside')), host.stats.decompress);
+            process.stdout.write(r.join(' '));
+            """
+            r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
+            @test r == "0 hello 28 28 28 hello none false 4"
+            # a response file that can't be written: `path_open` returns (the module then finds no response)
+            script = prelude * """
+            fs.writeFileSync(path.join(spool, '1.dreq'), '');
+            fs.chmodSync(spool, 0o555);
+            const r = ask(1, 'a.gz', 'a');
+            fs.chmodSync(spool, 0o755);
+            fs.writeFileSync(path.join(dir, 'returned'), String(r));
+            """
+            dir = mktempdir()
+            p = run(`$node --input-type=module -e $script $dir`; wait = false)
+            timedwait(() -> process_exited(p), 60.0) === :ok || kill(p, Base.SIGKILL)
+            wait(p)
+            @test isfile(joinpath(dir, "returned"))
+        end
+    end
+
     # the Node adapter's detected tags make the native platform's arch, os and libc
     @testset "JavaScript: platform tags" begin
         if node === nothing

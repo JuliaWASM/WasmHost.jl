@@ -42,7 +42,8 @@ function failure(kind, err) {
     : formatDecompressAnswer(errnoOf(err), String(err?.message ?? err));
 }
 
-// Do one job (host paths mapped) and write its response file. Never throws.
+// Do one job (host paths mapped) and write its response file. Throws only if that file can't be
+// written.
 export async function serve(job, { fetchImpl } = {}) {
   let text;
   try {
@@ -61,7 +62,8 @@ export async function serve(job, { fetchImpl } = {}) {
 export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetchImpl } = {}) {
   if (!spool) throw new Error('wasmhost: no spool directory');
   const map = makeMapper(preopens);
-  const spoolGuest = path.posix.normalize(spool);
+  // (without a trailing slash: compared with the `dirname` of the paths opened)
+  const spoolGuest = path.posix.normalize(spool).replace(/(?<=.)\/$/, '');
   fs.mkdirSync(map.toHost(spoolGuest), { recursive: true });
   let memory = null;
   const decoder = new TextDecoder();
@@ -77,8 +79,13 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
     if (path.posix.dirname(guest) !== spoolGuest) return null;
     const k = KINDS.find((x) => guest.endsWith(x.res));
     if (k === undefined) return null;
-    const resHost = map.toHost(guest);
-    const reqHost = resHost.slice(0, -k.res.length) + k.req;
+    let resHost, reqHost;
+    try {
+      resHost = map.toHost(guest);
+      reqHost = map.toHost(guest.slice(0, -k.res.length) + k.req);
+    } catch {
+      return null;   // (a link out of the preopens: WASI's own `path_open` answers)
+    }
     if (fs.existsSync(resHost) || !fs.existsSync(reqHost)) return null;
     return { kind: k.kind, reqHost, resHost };
   }
@@ -141,14 +148,22 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
 let WorkerCtor = null;
 function workerFor(sab) {
   WorkerCtor ??= process.getBuiltinModule('node:worker_threads').Worker;
+  // (`getBuiltinModule`, not `require`: the source is a module when the process runs with
+  // `--input-type=module`, where a `require` fails the worker before it can answer)
   const src = `
-    const { parentPort, workerData } = require('node:worker_threads');
+    const { parentPort, workerData } = process.getBuiltinModule('node:worker_threads');
     const flag = new Int32Array(workerData.sab);
     let mod = null;
     parentPort.on('message', async (job) => {
-      mod ??= await import(workerData.self);
-      await mod.serve(job);
-      Atomics.store(flag, 0, 1); Atomics.notify(flag, 0);
+      // (the main thread waits without a timeout: woken also when the job failed, e.g. the
+      // response file couldn't be written; it then finds no response)
+      try {
+        mod ??= await import(workerData.self);
+        await mod.serve(job);
+      } catch {
+      } finally {
+        Atomics.store(flag, 0, 1); Atomics.notify(flag, 0);
+      }
     });`;
   const w = new WorkerCtor(src, { eval: true, workerData: { sab, self: import.meta.url } });
   w.unref();
