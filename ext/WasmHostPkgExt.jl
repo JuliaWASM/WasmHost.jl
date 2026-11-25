@@ -25,6 +25,11 @@ using Pkg: PlatformEngines
 
 const MARKER = "wasm-decompress"
 
+# Julia 1.12's Pkg has no `get_extract_cmd` (it builds its `7z` commands in place, with nothing
+# to overlay): the extension loads there and adds nothing, so Pkg's decompression is unsupported
+# in a module compiled with Julia 1.12.
+@static if isdefined(PlatformEngines, :get_extract_cmd)
+
 Base.Experimental.@overlay WasmCodegen.Runtime.WASM_METHODS PlatformEngines.get_extract_cmd(tarball_path::AbstractString) =
     Cmd(String[MARKER, String(tarball_path)])
 
@@ -40,5 +45,7 @@ Base.Experimental.@overlay WasmCodegen.Runtime.WASM_METHODS function Base.open(f
         rm(tmp; force = true)
     end
 end
+
+end # @static if
 
 end # module
