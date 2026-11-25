@@ -211,6 +211,33 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         end
     end
 
+    # a guest path to the host's: inside its preopen also once symbolic links are followed
+    @testset "JavaScript: preopens and symbolic links" begin
+        if node === nothing
+            @test_skip "$runtime not found"
+        else
+            script = """
+            import fs from 'node:fs'; import path from 'node:path';
+            import { makeMapper } from $(js("node", "paths.mjs"));
+            const dir = fs.realpathSync(process.argv.at(-1)), box = path.join(dir, 'box'), out = path.join(dir, 'outside');
+            fs.mkdirSync(path.join(box, 'sub'), { recursive: true }); fs.mkdirSync(out);
+            fs.writeFileSync(path.join(out, 'secret'), 's');
+            fs.symlinkSync(out, path.join(box, 'dir'));                       // a directory outside
+            fs.symlinkSync(path.join(out, 'new'), path.join(box, 'dangling'));  // a file outside that doesn't exist yet
+            fs.symlinkSync('../outside/secret', path.join(box, 'relative'));
+            fs.symlinkSync('sub', path.join(box, 'inside'));
+            fs.symlinkSync('loop', path.join(box, 'loop'));
+            const map = makeMapper({ '/work': path.join(dir, 'box') });
+            const r = [];
+            for (const g of ['/work/a/b', '/work/inside/x', '/work/dir/x', '/work/dir/secret', '/work/dangling', '/work/relative', '/work/../x', '/work/loop'])
+              try { r.push(path.relative(dir, map.toHost(g))); } catch (e) { r.push(e.code); }
+            process.stdout.write(r.join(' '));
+            """
+            r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
+            @test r == "box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP"
+        end
+    end
+
     # the Node adapter's detected tags make the native platform's arch, os and libc
     @testset "JavaScript: platform tags" begin
         if node === nothing
