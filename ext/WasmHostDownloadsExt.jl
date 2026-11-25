@@ -92,7 +92,7 @@ function content_length(headers::Vector{Pair{String,String}})
     return 0
 end
 
-function wasm_request(url::String, input, output, method, headers, timeout::Float64, progress,
+function wasm_request(url::String, input, output, method, headers, timeout_ms::Int64, progress,
                       throw::Bool)::Union{Response,RequestError}
     meth = method === nothing ? (input !== nothing ? "PUT" : output !== nothing ? "GET" : "HEAD") :
            String(method)
@@ -102,7 +102,7 @@ function wasm_request(url::String, input, output, method, headers, timeout::Floa
     local r::Host.Result
     nbytes = 0
     try
-        r = Host.request(url, meth, hdrs, inp, out, timeout)
+        r = Host.request(url, meth, hdrs, inp, out, timeout_ms)
         r.code == 0 && (nbytes = copy_body!(output, out))
     finally
         in_tmp && rm(inp; force = true)
@@ -135,10 +135,10 @@ Base.Experimental.@overlay WasmCodegen.Runtime.WASM_METHODS function Downloads.r
     interrupt  :: Union{Nothing, Base.Event} = nothing,
 ) :: Union{Response, RequestError}
     # (`verbose`, `debug`, `downloader` and `interrupt` have no meaning for the host's fetch)
-    seconds = Host.timeout_seconds(timeout)
+    ms = Host.timeout_ms(timeout)
     p = progress === nothing ? nothing :
         Downloads.p_func(progress, something(input, devnull), something(output, devnull))
-    return wasm_request(String(url), input, output, method, headers, seconds, p, throw)
+    return wasm_request(String(url), input, output, method, headers, ms, p, throw)
 end
 
 ## what else Downloads needs in a trimmed module

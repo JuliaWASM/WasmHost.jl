@@ -9,7 +9,7 @@ Protocol `wasm-fetch 1` (UTF-8 text, one field per line, no line breaks inside a
 `<spool>/<id>.req` and `<spool>/<id>.res`, or in the buffers of `wasm_host.http_request`:
 
     request:  "wasm-fetch 1", method, url, output path ("" = discard the body),
-              input path ("" = no body), timeout in seconds ("inf"), then "name: value" headers
+              input path ("" = no body), timeout in milliseconds (0 = none), then "name: value" headers
     response: "wasm-fetch 1", code (0 = a response, else a libcurl error code), error message,
               final url (after redirects), status, status line ("HTTP/1.1 200 OK"),
               then "name: value" headers of the final response (names in lower case)
@@ -35,34 +35,41 @@ field(s::String, what::String) = WasmHost.field(s, PROTOCOL, what)
 no_host(url::String, msg::String) = Result(2, string("wasm-fetch: ", msg), url, 0, "", Pair{String,String}[])
 
 """
-    request_text(url, method, headers, input, output, timeout) -> String
+    request_text(url, method, headers, input, output, timeout_ms) -> String
 
 The text of a request. Throws an `ArgumentError` for a field with a line break.
 """
 function request_text(url::String, method::String, headers::Vector{Pair{String,String}},
-                      input::String, output::String, timeout::Float64)::String
+                      input::String, output::String, timeout_ms::Int64)::String
     io = IOBuffer()
     println(io, PROTOCOL)
     println(io, field(method, "method"))
     println(io, field(url, "url"))
     println(io, field(output, "output path"))
     println(io, field(input, "input path"))
-    println(io, isfinite(timeout) ? string(timeout) : "inf")
+    println(io, timeout_ms)
     for (k, v) in headers
         println(io, field(k, "header name"), ": ", field(v, "header value"))
     end
     return String(take!(io))
 end
 
-"""
-    timeout_seconds(timeout) -> Float64
+# C's `long` in a module for wasm32, as in a 32-bit native build (`Clong` here is the build process's)
+const Long = Int32
 
-The `timeout` keyword of `Downloads.request` in seconds (`Inf`: none), or the native method's
-`ArgumentError` for one that is not positive.
 """
-function timeout_seconds(timeout::Real)::Float64
+    timeout_ms(timeout) -> Int64
+
+The `timeout` keyword of `Downloads.request` as the milliseconds libcurl gets from the native
+method where `long` has 32 bits (0: no timeout), or that method's `ArgumentError` for one that
+is not positive. As Downloads' `set_timeout`: rounded to a whole millisecond (the nearest, a
+tie to the even one, so less than half of one is none); past 2147483 s, the last that fits a
+`long` in milliseconds, to a whole second; past a `long` of seconds, and for `Inf`, none.
+"""
+function timeout_ms(timeout::Real)::Int64
     timeout > 0 || throw(ArgumentError("timeout must be positive, got $timeout"))
-    return Float64(timeout)
+    timeout ≤ typemax(Long) ÷ 1000 && return Int64(round(Long, timeout * 1000))
+    return timeout ≤ typemax(Long) ? 1000 * Int64(round(Long, timeout)) : Int64(0)
 end
 
 """
@@ -70,13 +77,17 @@ end
 
 The `headers` keyword of `Downloads.request` as the headers to send, with `user_agent` unless
 `headers` has a `User-Agent`. `name => nothing` sends no such header (libcurl's `"Name:"`): for
-`User-Agent` that leaves the header to the host (the native method sends none; Node's `fetch`
-sends its own).
+a header the host's `fetch` adds itself, as `User-Agent` and `Accept`, that leaves it to the
+host (the native method sends none; Node's `fetch` sends its own). An entry that is not such a
+pair is the native method's `ArgumentError`.
 """
 function header_pairs(headers, user_agent::String)::Vector{Pair{String,String}}
     hdrs = Pair{String,String}[]
     agent = false
-    for (k, v) in headers
+    for hdr in headers
+        hdr isa Pair{<:AbstractString,<:Union{AbstractString,Nothing}} ||
+            throw(ArgumentError("invalid header: $(repr(hdr))"))
+        k, v = hdr
         agent |= lowercase(k) == "user-agent"
         v === nothing || push!(hdrs, String(k) => String(v))
     end
@@ -85,16 +96,16 @@ function header_pairs(headers, user_agent::String)::Vector{Pair{String,String}}
 end
 
 """
-    request(url, method, headers, input, output, timeout) -> Result
+    request(url, method, headers, input, output, timeout_ms) -> Result
 
 Perform the request through the host. `input`/`output` are paths of the program's filesystem
 (\"\": none). Never throws for a failure of the request itself: that is `Result.code != 0`
 (code 2 when the host has no fetch).
 """
 function request(url::String, method::String, headers::Vector{Pair{String,String}},
-                 input::String, output::String, timeout::Float64)::Result
+                 input::String, output::String, timeout_ms::Int64)::Result
     isempty(spool_dir()) && return no_host(url, "the host provides no fetch (WASMHOST_SPOOL is not set)")
-    text = request_text(url, method, headers, input, output, timeout)
+    text = request_text(url, method, headers, input, output, timeout_ms)
     res = WasmHost.transport() === :import ? request_import(text) : spool_exchange(text, ".req", ".res")
     res === nothing && return no_host(url, "no response from the host (is its adapter installed?)")
     return parse_result(split_lines(res), url)

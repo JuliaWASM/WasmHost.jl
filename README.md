@@ -59,7 +59,8 @@ module contains no libcurl. `Downloads.download` is Downloads' own and calls `re
 | | |
 |---|---|
 | **Methods and bodies** | GET, HEAD, PUT, POST and other methods. Bodies to a path, an `IO` or nowhere; request bodies from a path or an `IO`. A path body is streamed to the file by the host. |
-| **Headers** | Request headers, including Downloads' default `User-Agent`. `name => nothing` sends no such header; for `User-Agent` the host then sends its own (Node's `fetch`: `node`), where libcurl sends none. The response's headers with lower-case names, `set-cookie` entries kept apart. |
+| **Headers** | Request headers, including Downloads' default `User-Agent`. `name => nothing` sends no such header, but can't take out one that the host's `fetch` adds to a request without it: Node's then sends its own `Accept: */*`, `Accept-Language: *`, `Accept-Encoding`, `Sec-Fetch-Mode` and `User-Agent: node`, where libcurl sends none. An entry that isn't a pair of a name and a string or `nothing` is an `ArgumentError`. The response's headers with lower-case names, `set-cookie` entries kept apart. |
+| **Timeout** | `timeout` in seconds, as Downloads gives it to libcurl in a build whose C `long` has 32 bits: rounded to a whole millisecond (less than half of one is no timeout), and past 2147483 s to a whole second. Not positive: an `ArgumentError`. The Node adapter sets none past 2^31 − 1 ms (24.8 days), a timer's range. A timeout is a `RequestError` with code 28. |
 | **Redirects** | Followed. `Response.url` is the final URL. |
 | **Errors** | A non-2xx `download` is a `RequestError` with code 0 and the response. A transport failure is a `RequestError` with libcurl's code (6 resolve, 7 connect, 28 timeout, 47 too many redirects, 60 TLS, else 56) and status 0. `request(throw = false)` returns it. |
 | **Progress** | One call at the end with the complete transfer: `(Content-Length or 0, bytes received)`, as libcurl's last call. |

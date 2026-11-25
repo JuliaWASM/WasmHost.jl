@@ -10,10 +10,9 @@ import { curlCode } from '../common/fetch.mjs';
 export async function perform(req, { fetchImpl = globalThis.fetch } = {}) {
   try {
     const init = { method: req.method, headers: req.headers, redirect: 'follow' };
-    // (whole milliseconds, libcurl's resolution: AbortSignal.timeout takes no fraction. Beyond a
-    // timer's range, 2^31 - 1 ms, there is no timeout: a timer would fire after 1 ms instead)
-    const ms = Math.round(req.timeout * 1000);
-    if (ms <= 0x7fffffff) init.signal = AbortSignal.timeout(Math.max(1, ms));
+    // (whole milliseconds, as libcurl gets them: 0 is no timeout. Beyond a timer's range,
+    // 2^31 - 1 ms, there is none either: a timer would fire after 1 ms instead)
+    if (req.timeout > 0 && req.timeout <= 0x7fffffff) init.signal = AbortSignal.timeout(req.timeout);
     if (req.inputHost) { init.body = fs.readFileSync(req.inputHost); }
     const r = await fetchImpl(req.url, init);
     if (req.outputHost && r.body) {

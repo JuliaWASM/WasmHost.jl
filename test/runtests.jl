@@ -4,7 +4,7 @@
 # test/e2e/e2e.jl.
 using Test, WasmHost
 using WasmHost: split_lines, spool_dir
-using WasmHost.Downloads: request_text, parse_result, Result, timeout_seconds, header_pairs
+using WasmHost.Downloads: request_text, parse_result, Result, timeout_ms, header_pairs
 using WasmHost.Decompress: DecompressError, decompress, parse_answer
 using Base.BinaryPlatforms: HostPlatform, triplet, arch, os, libc
 
@@ -35,26 +35,36 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     end
 
     @testset "Downloads: request text" begin
-        t = request_text("http://h/x", "GET", ["Accept" => "*/*", "X-A" => "b c"], "", "/w/out.bin", Inf)
-        @test t == "wasm-fetch 1\nGET\nhttp://h/x\n/w/out.bin\n\ninf\nAccept: */*\nX-A: b c\n"
-        @test split(request_text("u", "PUT", Pair{String,String}[], "/w/in", "", 2.5), '\n')[5:6] == ["/w/in", "2.5"]
-        @test_throws ArgumentError request_text("http://h/\nx", "GET", Pair{String,String}[], "", "", Inf)
-        @test_throws ArgumentError request_text("u", "GET", ["X" => "a\r\nY: b"], "", "", Inf)
+        t = request_text("http://h/x", "GET", ["Accept" => "*/*", "X-A" => "b c"], "", "/w/out.bin", 0)
+        @test t == "wasm-fetch 1\nGET\nhttp://h/x\n/w/out.bin\n\n0\nAccept: */*\nX-A: b c\n"
+        @test split(request_text("u", "PUT", Pair{String,String}[], "/w/in", "", 2500), '\n')[5:6] == ["/w/in", "2500"]
+        @test_throws ArgumentError request_text("http://h/\nx", "GET", Pair{String,String}[], "", "", 0)
+        @test_throws ArgumentError request_text("u", "GET", ["X" => "a\r\nY: b"], "", "", 0)
     end
 
     # the `timeout` and `headers` keywords as the native `Downloads.request` takes them
     @testset "Downloads: timeout and headers" begin
-        @test timeout_seconds(Inf) === Inf
-        @test timeout_seconds(3) === 3.0
-        @test timeout_seconds(1//4) === 0.25
+        # milliseconds as Downloads' `set_timeout` gives them to libcurl with a `long` of 32 bits; 0: none
+        @test timeout_ms(3) === Int64(3000)
+        @test timeout_ms(1//4) === Int64(250)
+        @test timeout_ms(0.3004) == 300
+        # (the nearest millisecond, a tie to the even one; less than half of one: no timeout)
+        @test (timeout_ms(0.0025), timeout_ms(0.0035), timeout_ms(0.0005), timeout_ms(0.0001)) == (2, 4, 0, 0)
+        # (past a `long` of milliseconds: whole seconds; past a `long` of seconds, and `Inf`: none)
+        @test (timeout_ms(2147483), timeout_ms(2147483.4), timeout_ms(2147484.5)) == (2147483000, 2147483000, 2147484000)
+        @test (timeout_ms(2147483647), timeout_ms(2147483648), timeout_ms(Inf)) == (2147483647000, 0, 0)
         for t in (0, 0.0, -1, -Inf, NaN)
-            @test_throws ArgumentError("timeout must be positive, got $t") timeout_seconds(t)
+            @test_throws ArgumentError("timeout must be positive, got $t") timeout_ms(t)
         end
         @test header_pairs(["X-A" => "b"], "julia") == ["X-A" => "b", "User-Agent" => "julia"]
         @test header_pairs(Dict("user-agent" => "mine"), "julia") == ["user-agent" => "mine"]
         # `nothing`: no such header, nor the default User-Agent in its place
         @test header_pairs(["User-Agent" => nothing], "julia") == Pair{String,String}[]
         @test header_pairs(["X-A" => nothing, "X-B" => ""], "julia") == ["X-B" => "", "User-Agent" => "julia"]
+        # an entry that is not a pair of a name and a value or `nothing`
+        for h in (("X", nothing), "X" => 1, :X => "a", "X: a")
+            @test_throws ArgumentError("invalid header: $(repr(h))") header_pairs([h], "julia")
+        end
     end
 
     @testset "Downloads: response parsing" begin
@@ -74,13 +84,13 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     @testset "Downloads: without a host" begin
         # no spool directory: a failure of the request (code 2), not an exception
         withenv(NOSPOOL...) do
-            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", Inf)
+            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", 0)
             @test r.code == 2 && occursin("WASMHOST_SPOOL", r.message)
         end
         # a spool directory but no adapter answering it: code 2, and nothing left behind
         dir = mktempdir()
         withenv("WASMHOST_SPOOL" => dir) do
-            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", Inf)
+            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", 0)
             @test r.code == 2 && occursin("no response", r.message)
         end
         @test isempty(readdir(dir))
@@ -155,7 +165,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         if node === nothing
             @test_skip "$runtime not found"
         else
-            req = request_text("http://h/x?a=1", "POST", ["X-Probe" => "v: w"], "/w/in", "/w/out", 3.0)
+            req = request_text("http://h/x?a=1", "POST", ["X-Probe" => "v: w"], "/w/in", "/w/out", 3000)
             script = """
             import { parseRequest, formatResult } from $(js("common", "fetch.mjs"));
             const req = parseRequest(process.argv.at(-1));
@@ -165,27 +175,60 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             out = read(`$node --input-type=module -e $script $req`, String)
             r = parse_result(split_lines(out), "http://h/x?a=1")
             @test (r.code, r.url, r.status, r.status_line) == (0, "http://h/x?a=1#final", 201, "HTTP/1.1 201 Created")
-            @test r.headers == ["x-echo" => """["POST","/w/out","/w/in",3,[["X-Probe","v: w"]]]"""]
+            @test r.headers == ["x-echo" => """["POST","/w/out","/w/in",3000,[["X-Probe","v: w"]]]"""]
         end
     end
 
-    # the Node adapter's timeout: whole milliseconds for `AbortSignal.timeout`, none past a timer's range
+    # the Node adapter's timeout: the request's milliseconds; none for 0, nor past a timer's range
     @testset "JavaScript: request timeout" begin
         if node === nothing
             @test_skip "$runtime not found"
         else
             script = """
+            import { parseRequest } from $(js("common", "fetch.mjs"));
             import { perform } from $(js("node", "http.mjs"));
             const out = [];
-            for (const timeout of [2.5, 0.3004, 0.0001, 1e7, Infinity]) {
+            for (const text of process.argv.slice(-6)) {
               let signal;
-              const r = await perform({ method: 'GET', url: 'http://h/', headers: [], timeout },
+              const r = await perform(parseRequest(text),
                 { fetchImpl: async (url, init) => { signal = init.signal; return new Response(null, { status: 204 }); } });
               out.push(r.code + (signal ? 't' : 'n'));
             }
+            // (and it is that many: a response after 300 ms, with 20 ms and with 2 s)
+            const slow = () => new Promise((resolve) => setTimeout(() => resolve(new Response(null, { status: 204 })), 300));
+            const late = (init) => new Promise((resolve, reject) => { slow().then(resolve); init.signal.addEventListener('abort', () => reject(init.signal.reason)); });
+            for (const timeout of [20, 2000])
+              out.push((await perform({ method: 'GET', url: 'http://h/', headers: [], timeout }, { fetchImpl: (url, init) => late(init) })).code);
             process.stdout.write(out.join(' '));
             """
-            @test read(`$node --input-type=module -e $script`, String) == "0t 0t 0t 0n 0n"
+            reqs = [request_text("http://h/", "GET", Pair{String,String}[], "", "", timeout_ms(t))
+                    for t in (2.5, 0.3004, 0.0001, 2147483, 1e7, Inf)]
+            @test read(`$node --input-type=module -e $script $reqs`, String) == "0t 0t 0n 0t 0n 0n 28 0"
+        end
+    end
+
+    # what `fetch` sends for a request whose headers are `name => nothing`: its own `Accept` and `User-Agent`, which
+    # the adapter can't take out (the README's "Known differences"); a header `fetch` doesn't add is not sent
+    @testset "JavaScript: headers that fetch adds" begin
+        if node === nothing
+            @test_skip "$runtime not found"
+        else
+            script = """
+            import http from 'node:http';
+            import { parseRequest } from $(js("common", "fetch.mjs"));
+            import { perform } from $(js("node", "http.mjs"));
+            const server = http.createServer((q, r) => { r.setHeader('x-seen', JSON.stringify(q.headers)); r.end(); });
+            await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+            const req = parseRequest(process.argv.at(-1).replace('PORT', server.address().port));
+            const r = await perform(req);
+            const seen = JSON.parse(r.headers.find(([k]) => k === 'x-seen')[1]);
+            process.stdout.write([r.status, seen.accept, 'user-agent' in seen && seen['user-agent'] !== 'julia', 'x-a' in seen, seen['x-b']].join(' '));
+            server.close();
+            """
+            hdrs = header_pairs(["Accept" => nothing, "User-Agent" => nothing, "X-A" => nothing, "X-B" => "b"], "julia")
+            @test hdrs == ["X-B" => "b"]
+            req = request_text("http://127.0.0.1:PORT/", "GET", hdrs, "", "", 0)
+            @test read(`$node --input-type=module -e $script $req`, String) == "200 */* true false b"
         end
     end
 

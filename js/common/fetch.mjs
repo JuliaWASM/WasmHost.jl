@@ -28,7 +28,8 @@ export function parseRequest(text) {
     const i = l.indexOf(':');
     if (i > 0) headers.push([l.slice(0, i), l.slice(i + 1).trim()]);
   }
-  return { method, url, output, input, timeout: timeout === 'inf' ? Infinity : Number(timeout), headers };
+  // (`timeout`: milliseconds, 0 for none)
+  return { method, url, output, input, timeout: Number(timeout), headers };
 }
 
 export function formatResult(r) {
