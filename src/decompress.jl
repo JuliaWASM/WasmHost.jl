@@ -23,6 +23,7 @@ const PROTOCOL = "wasm-decompress 1"
 # WASI errno values the host answers with
 const EACCES = 2
 const EILSEQ = 25   # not data of the format (or of no format `auto` knows)
+const EINVAL = 28   # the source and the destination are the same file
 const EIO = 29      # failed while decompressing (corrupt data, a write error)
 const ENOENT = 44   # no source file
 const ENOSYS = 52   # the host can't do this (no adapter, or no decompressor for the format)
@@ -31,8 +32,9 @@ const ENOSYS = 52   # the host can't do this (no adapter, or no decompressor for
     DecompressError(errno, message)
 
 A decompression that didn't complete. `errno` is a WASI errno: `EILSEQ` (25) for data that
-isn't of the format, `EIO` (29) for corrupt data or an I/O error, `ENOENT` (44) for a missing
-source, `ENOSYS` (52) when the host can't decompress at all or not this format.
+isn't of the format, `EINVAL` (28) for a destination that is the source, `EIO` (29) for corrupt
+data or an I/O error, `ENOENT` (44) for a missing source, `ENOSYS` (52) when the host can't
+decompress at all or not this format.
 """
 struct DecompressError <: Exception
     errno::Int
@@ -69,8 +71,10 @@ end
 
 Decompress the file `src` into the file `dst` (replaced if it exists) and return `dst`'s
 absolute path. `format` is `:auto` (gzip or zstd, by magic bytes), `:gzip`, `:deflate` or
-`:zstd`. Throws a [`DecompressError`](@ref) when the host doesn't complete it; `dst` then
-doesn't exist.
+`:zstd`. Throws a [`DecompressError`](@ref) when the host doesn't complete it. The host then
+removes `dst` if it has opened it for writing, and only then: a failure before that (no
+adapter, no source, not the format's data, a `dst` that is `src` itself, also under another
+name, which is `EINVAL`) leaves a file that was there as it is.
 
 The host does the work through the spool directory. Without one (natively, or a host without
 the adapter) this is `DecompressError(ENOSYS)`: a native program decompresses with its own
@@ -81,16 +85,11 @@ function decompress(src::AbstractString, dst::AbstractString; format::Symbol = :
     s, d = String(abspath(src)), String(abspath(dst))
     isempty(spool_dir()) &&
         throw(DecompressError(ENOSYS, "this host provides no decompression (WASMHOST_SPOOL is not set)"))
+    # (`d` is the host's: it knows whether it opened it, and removes what it left unfinished)
     text = spool_exchange(request_text(s, d, fmt), ".dreq", ".dres")
-    if text === nothing
-        rm(d; force = true)
-        throw(DecompressError(ENOSYS, "no answer from the host (is its adapter installed?)"))
-    end
+    text === nothing && throw(DecompressError(ENOSYS, "no answer from the host (is its adapter installed?)"))
     errno, msg = parse_answer(split_lines(text))
-    if errno != 0
-        rm(d; force = true)
-        throw(DecompressError(errno, msg))
-    end
+    errno == 0 || throw(DecompressError(errno, msg))
     return d
 end
 

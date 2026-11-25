@@ -18,14 +18,16 @@
 //     suspended; exports that download or decompress must be called through
 //     `WebAssembly.promising` (Node 24+ and Bun have it on by default).
 //   - 'sync': the work runs on a worker thread while the main thread blocks in `Atomics.wait`.
+//     The wait has no timeout: a worker that dies before it takes a job (e.g. a `--require`
+//     preload that fails in it) can't be told from one still working, and the module then hangs.
 // `fetchImpl` replaces `fetch` (jspi mode only; e.g. to refuse all requests).
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseRequest, formatResult } from '../common/fetch.mjs';
 import { parseDecompressRequest, formatDecompressAnswer } from '../common/decompress.mjs';
-import { makeMapper } from './paths.mjs';
-import { perform } from './http.mjs';
+import { makeMapper, guestDir } from './paths.mjs';
+import { perform, mapFiles, failed } from './http.mjs';
 import { decompressFile, errnoOf } from './decompress.mjs';
 
 export { makeMapper, perform, decompressFile };
@@ -37,12 +39,11 @@ const KINDS = [
 
 // The answer for a job that failed before it ran
 function failure(kind, err) {
-  return kind === 'fetch'
-    ? formatResult({ code: 2, message: String(err?.message ?? err), url: '', status: 0, headers: [] })
-    : formatDecompressAnswer(errnoOf(err), String(err?.message ?? err));
+  return kind === 'fetch' ? formatResult(failed(err)) : formatDecompressAnswer(errnoOf(err), String(err?.message ?? err));
 }
 
-// Do one job (host paths mapped) and write its response file. Never throws.
+// Do one job (host paths mapped) and write its response file. Throws only if that file can't be
+// written.
 export async function serve(job, { fetchImpl } = {}) {
   let text;
   try {
@@ -61,8 +62,10 @@ export async function serve(job, { fetchImpl } = {}) {
 export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetchImpl } = {}) {
   if (!spool) throw new Error('wasmhost: no spool directory');
   const map = makeMapper(preopens);
-  const spoolGuest = path.posix.normalize(spool);
-  fs.mkdirSync(map.toHost(spoolGuest), { recursive: true });
+  // (without a trailing slash, as the mapper's preopens: compared with the `dirname` of the paths opened)
+  const spoolGuest = guestDir(spool);
+  // (resolved as the directory it is for the files opened in it: a link to one is followed)
+  fs.mkdirSync(map.toHost(spoolGuest + '/'), { recursive: true });
   let memory = null;
   const decoder = new TextDecoder();
   const original = wasiImport.path_open;
@@ -77,8 +80,13 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
     if (path.posix.dirname(guest) !== spoolGuest) return null;
     const k = KINDS.find((x) => guest.endsWith(x.res));
     if (k === undefined) return null;
-    const resHost = map.toHost(guest);
-    const reqHost = resHost.slice(0, -k.res.length) + k.req;
+    let resHost, reqHost;
+    try {
+      resHost = map.toHost(guest);
+      reqHost = map.toHost(guest.slice(0, -k.res.length) + k.req);
+    } catch {
+      return null;   // (a link out of the preopens: WASI's own `path_open` answers)
+    }
     if (fs.existsSync(resHost) || !fs.existsSync(reqHost)) return null;
     return { kind: k.kind, reqHost, resHost };
   }
@@ -87,14 +95,19 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
     const text = fs.readFileSync(p.reqHost, 'utf8');
     if (p.kind === 'fetch') {
       const req = parseRequest(text);
-      req.outputHost = req.output ? map.toHost(req.output) : '';
-      req.inputHost = req.input ? map.toHost(req.input) : '';
+      mapFiles(req, map);
       stats.requests++;
       return { kind: 'fetch', req, resHost: p.resHost };
     }
     const d = parseDecompressRequest(text);
     stats.decompress++;
     return { kind: 'decompress', srcHost: map.toHost(d.src), dstHost: map.toHost(d.dst), format: d.format, resHost: p.resHost };
+  }
+
+  // the response to a request that `prepare` refused. (Never an exception of `path_open`: if
+  // the response can't be written, the module finds none, as when a job fails.)
+  function refuse(p, err) {
+    try { fs.writeFileSync(p.resHost, failure(p.kind, err)); } catch {}
   }
 
   let path_open;
@@ -106,8 +119,8 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
       if (p === null) return original(...args);
       return (async () => {
         let job;
-        try { job = prepare(p); } catch (err) { fs.writeFileSync(p.resHost, failure(p.kind, err)); return original(...args); }
-        await serve(job, { fetchImpl });
+        try { job = prepare(p); } catch (err) { refuse(p, err); return original(...args); }
+        try { await serve(job, { fetchImpl }); } catch {}
         return original(...args);
       })();
     });
@@ -119,7 +132,7 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
       const p = pending(args[0], args[2], args[3]);
       if (p === null) return original(...args);
       let job;
-      try { job = prepare(p); } catch (err) { fs.writeFileSync(p.resHost, failure(p.kind, err)); return original(...args); }
+      try { job = prepare(p); } catch (err) { refuse(p, err); return original(...args); }
       worker ??= workerFor(sab);
       Atomics.store(flag, 0, 0);
       worker.postMessage(job);
@@ -141,14 +154,22 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
 let WorkerCtor = null;
 function workerFor(sab) {
   WorkerCtor ??= process.getBuiltinModule('node:worker_threads').Worker;
+  // (`getBuiltinModule`, not `require`: the source is a module when the process runs with
+  // `--input-type=module`, where a `require` fails the worker before it can answer)
   const src = `
-    const { parentPort, workerData } = require('node:worker_threads');
+    const { parentPort, workerData } = process.getBuiltinModule('node:worker_threads');
     const flag = new Int32Array(workerData.sab);
     let mod = null;
     parentPort.on('message', async (job) => {
-      mod ??= await import(workerData.self);
-      await mod.serve(job);
-      Atomics.store(flag, 0, 1); Atomics.notify(flag, 0);
+      // (the main thread waits without a timeout: woken also when the job failed, e.g. the
+      // response file couldn't be written; it then finds no response)
+      try {
+        mod ??= await import(workerData.self);
+        await mod.serve(job);
+      } catch {
+      } finally {
+        Atomics.store(flag, 0, 1); Atomics.notify(flag, 0);
+      }
     });`;
   const w = new WorkerCtor(src, { eval: true, workerData: { sab, self: import.meta.url } });
   w.unref();

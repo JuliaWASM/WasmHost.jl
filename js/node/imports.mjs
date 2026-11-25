@@ -17,7 +17,7 @@
 //     written). Suspending (JSPI): the export must be called through WebAssembly.promising.
 import { parseRequest, formatResult } from '../common/fetch.mjs';
 import { makeMapper } from './paths.mjs';
-import { perform } from './http.mjs';
+import { perform, mapFiles, failed } from './http.mjs';
 
 export function makeImports({ preopens = {}, fetchImpl } = {}) {
   const map = makeMapper(preopens);
@@ -27,12 +27,11 @@ export function makeImports({ preopens = {}, fetchImpl } = {}) {
     let result;
     try {
       const req = parseRequest(new TextDecoder().decode(new Uint8Array(memory.buffer, reqOff, reqLen)));
-      req.outputHost = req.output ? map.toHost(req.output) : '';
-      req.inputHost = req.input ? map.toHost(req.input) : '';
+      mapFiles(req, map);
       stats.requests++;
       result = await perform(req, { fetchImpl });
     } catch (err) {
-      result = { code: 2, message: String(err?.message ?? err), url: '', status: 0, headers: [] };
+      result = failed(err);
     }
     const bytes = new TextEncoder().encode(formatResult(result));
     if (bytes.length > resCap) return -bytes.length;

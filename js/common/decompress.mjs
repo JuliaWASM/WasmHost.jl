@@ -4,7 +4,7 @@
 export const DPROTOCOL = 'wasm-decompress 1';
 
 // the WASI errno values of an answer
-export const ERRNO = { OK: 0, EACCES: 2, EILSEQ: 25, EIO: 29, ENOENT: 44, ENOSYS: 52 };
+export const ERRNO = { OK: 0, EACCES: 2, EILSEQ: 25, EINVAL: 28, EIO: 29, ENOENT: 44, ENOSYS: 52 };
 
 export const FORMATS = ['auto', 'gzip', 'deflate', 'zstd'];
 
