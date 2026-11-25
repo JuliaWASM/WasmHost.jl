@@ -92,12 +92,13 @@ WasmHost.Decompress.decompress(src, dst; format = :auto)   # -> abspath(dst)
 - **Hosts:** gzip and deflate on every host with an adapter; zstd where the host has it.
 - **Errors:** a `DecompressError(errno, message)` with a WASI errno:
   - `EILSEQ` (25): the data isn't of the format, or of no format `:auto` knows;
+  - `EINVAL` (28): `dst` is `src` itself, also under another name (the file is left as it is);
   - `EIO` (29): corrupt data or an I/O error;
   - `ENOENT` (44): no source file;
   - `ENOSYS` (52): no host adapter (natively, too), or no decompressor for the format (bzip2,
     xz and lz4 by magic bytes; zstd on a host without it).
 
-  `dst` doesn't exist after a failure.
+  `dst` doesn't exist after a failure (other than `EINVAL`).
 - **Transport:** always the spool directory, also in a build whose downloads use the import
   transport.
 

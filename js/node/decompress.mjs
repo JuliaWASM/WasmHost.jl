@@ -22,12 +22,16 @@ function stage(format) {
 }
 
 // Decompress the host file `srcHost` into `dstHost`: [errno, message], [0, ''] when done. On
-// failure `dstHost` doesn't exist.
+// failure `dstHost` doesn't exist, unless it is the source itself (the same file, by another
+// name too): that is EINVAL, and the file is left as it is.
 export async function decompressFile(srcHost, dstHost, format = 'auto') {
   let head;
   try {
     const fd = fs.openSync(srcHost, 'r');
     try {
+      // (opening the destination would truncate the source)
+      const s = fs.fstatSync(fd, { bigint: true }), d = fs.statSync(dstHost, { bigint: true, throwIfNoEntry: false });
+      if (d !== undefined && d.dev === s.dev && d.ino === s.ino) return [ERRNO.EINVAL, 'the source and the destination are the same file'];
       head = Buffer.alloc(6);
       head = head.subarray(0, fs.readSync(fd, head, 0, 6, 0));
     } finally { fs.closeSync(fd); }

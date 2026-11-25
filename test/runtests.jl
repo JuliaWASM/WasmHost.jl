@@ -100,6 +100,9 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         end
         # (nothing left behind; no destination after a failure)
         @test isempty(readdir(spool)) && !ispath(dst)
+        # the source as the destination: refused, and still there
+        e = try decompress(src, joinpath(dir, ".", "a.gz")) catch e; e end
+        @test e isa DecompressError && e.errno == 28 && read(src, String) == "x"
     end
 
     @testset "Platform" begin
