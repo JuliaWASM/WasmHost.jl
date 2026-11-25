@@ -44,7 +44,7 @@ if (both) {
 } else {
   rc = exports.main_send();
 }
-// (what the program returned, `main_send` as `main`: e2e.jl compares it with the native run's)
+// (what the program returned: e2e.jl compares it with the native run's of the same entry point)
 console.log(`main returned ${rc}`);
 const expected = [...SIZES.map((n, k) => pattern(n, k + 1)), ...LENGTHS.map((n, k) => utf8(text(n, k + 1))), ...(both ? posted : [])];
 const ok = received.length === expected.length && received.every((m, i) => same(m, expected[i])) &&

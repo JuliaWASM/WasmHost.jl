@@ -169,18 +169,20 @@ function decompression(env)
     return ok
 end
 
-# page messages: for WASI, then for JavaScript (sending only)
+# page messages: for WASI, then for JavaScript (sending only), each against the native run of the entry point
+# its runner calls
 function page(env)
-    native, code = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl"))`)
-    print("native:\n", native)
-    want(prefix) = lines(native, prefix)
-    ok = code == 0 && occursin("page check: true", native) && rc(native) !== nothing
-    for host in ("wasi", "js")
+    ok = true
+    for (host, entry) in (("wasi", "main"), ("js", "main_send"))
+        native, ncode = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl")) $entry`)
+        print("native ($entry):\n", native)
+        want(prefix) = lines(native, prefix)
+        ok &= ncode == 0 && occursin("page check: true", native) && rc(native) !== nothing
         wasm = joinpath(work, "page-$host.wasm")
         build(env, wasm, host, "page")
         out, code = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)
         same = ran(out, code) && rc(out) == rc(native) && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
-               (host == "js" || lines(out, "R") == want("R"))
+               lines(out, "R") == want("R")
         println("== page/$host: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
         ok &= same
     end
