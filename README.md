@@ -177,9 +177,9 @@ page.post(new TextEncoder().encode('{"zoom": 3}'));   // read by the program's n
   through WasmCodegen's staging area (`Runtime.Staging`), in chunks of at most 1 MiB, so they
   are for `host = :wasi` only: WasmCodegen's bytes arguments go from the module to the host, and
   a module for JavaScript that calls them doesn't compile.
-- **Hosts:** Node 24.21 or newer, or Bun 1.4 or newer (tested with Node 24 and 26 and Bun 1.4).
-  No JSPI is needed, because the page functions don't suspend; an older Node 24 needs
-  `--experimental-wasm-exnref` for WasmCodegen's modules. `page.mjs` uses no
+- **Hosts:** Node 24.20 or newer, or Bun 1.4 or newer (tested with Node 24 and 26 and Bun 1.4).
+  No JSPI is needed, because the page functions don't suspend, so an older Node 24 works too:
+  before 24.15 with `--experimental-wasm-exnref`, for WasmCodegen's modules. `page.mjs` uses no
   Node API, so a browser should work too, but none has been tested.
 - **Natively** there is no page: `send` keeps a copy in `Page.native_outbox()`, and `receive`
   takes from `Page.native_inbox()`, which a test fills.
@@ -210,10 +210,11 @@ To migrate:
 - Julia 1.12 or 1.13.
 - A WasmCodegen with WASI support for `Config(host = :wasi)`: the filesystem and the
   environment (`ENV`). Upstream `main` has both.
-- Node 24.21 or newer for the Node adapter, or Bun. The `jspi` mode needs JavaScript Promise
+- Node 24.20 or newer for the Node adapter, or Bun. The `jspi` mode needs JavaScript Promise
   Integration (`WebAssembly.Suspending` and `WebAssembly.promising`), and WasmCodegen's modules
-  use `exnref`: Node 24.21 and later have both without a flag. An earlier Node 24 needs
-  `--experimental-wasm-jspi` and `--experimental-wasm-exnref`. (Node 22 has only the older JSPI
+  use `exnref`: Node 24.20 and later have both without a flag (`exnref` since 24.15, JSPI since
+  24.20). An earlier Node 24 needs `--experimental-wasm-jspi`, and before 24.15
+  `--experimental-wasm-exnref`. (Node 22 has only the older JSPI
   API, and Node 26 rejects the JSPI flag: don't pass it there.)
 
 ## Building
@@ -274,7 +275,7 @@ protocols in `js/common/`. See [`js/README.md`](js/README.md).
 
 | Host | Future package | Downloads | Decompression | Platform tags | Waiting | Tested? |
 |---|---|---|---|---|---|---|
-| **Node** 24.21+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
+| **Node** 24.20+ (`node:wasi`) | `@wasmhost/node` (`js/node/`) | spool (`spool.mjs`), import (`imports.mjs`) | spool: gzip, deflate, zstd | detected arch, os, libc + overrides | JSPI; sync worker (spool) | **Yes** (CI, with Bun 1.4): spool in both modes; import |
 | **Browsers** | `@wasmhost/browser` (`js/browser/`: only `page.mjs`, the page messages) | import intended; spool only on a JavaScript WASI filesystem | `DecompressionStream`: gzip, deflate, no zstd | none to detect | JSPI where available; a sync worker only with cross-origin isolation | **No.** Design notes only: not supported until something has run in a browser |
 | **workerd** | – | import fits; no filesystem | `DecompressionStream` | – | JSPI, if available | **No** (`js/workerd/`) |
 | **wasmtime** | – | CLI: no (needs a helper process and polling); import from an embedding | the embedding's | the embedding's | the embedding's | **No** (`js/wasmtime/`) |
