@@ -5,12 +5,22 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { curlCode } from '../common/fetch.mjs';
 
+// A request's timeout in milliseconds: the whole number that Julia's side made its seconds from
+// (as libcurl gets them; 0 is none, Infinity too)
+// (Rounded: a thousand times the seconds is not always that whole number, 8.124 * 1000, and
+// `AbortSignal.timeout` refuses a fraction. An adapter from before this rounding fails such a
+// request of a module built with this version: the adapter goes with the module.)
+export const timeoutMs = (req) => Math.round(req.timeout * 1000);
+
 // Perform one request (`req` of parseRequest, with `outputHost`/`inputHost` mapped): the result
 // for formatResult.
 export async function perform(req, { fetchImpl = globalThis.fetch } = {}) {
   try {
     const init = { method: req.method, headers: req.headers, redirect: 'follow' };
-    if (Number.isFinite(req.timeout)) init.signal = AbortSignal.timeout(Math.max(1, req.timeout * 1000));
+    // (beyond a timer's range, 2^31 - 1 ms, there is no timeout either: a timer would fire after
+    // 1 ms instead)
+    const ms = timeoutMs(req);
+    if (ms > 0 && ms <= 0x7fffffff) init.signal = AbortSignal.timeout(ms);
     if (req.inputHost) { init.body = fs.readFileSync(req.inputHost); }
     const r = await fetchImpl(req.url, init);
     if (req.outputHost && r.body) {
