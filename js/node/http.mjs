@@ -5,27 +5,6 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { curlCode } from '../common/fetch.mjs';
 
-// The host paths of a request's files (`map` of makeMapper): `outputHost`, `inputHost`. Before
-// the request is sent, and so one whose file can't be had is not sent: as Downloads natively,
-// which opens its output before libcurl gets the request. Throws: a path outside the preopens
-// refuses the request; any other error is the file's, and carries the request's `url`.
-export function mapFiles(req, map) {
-  const file = (g) => {
-    try { return g ? map.toHost(g) : ''; } catch (err) { throw err?.outside ? err : Object.assign(err, { url: req.url }); }
-  };
-  req.outputHost = file(req.output);
-  req.inputHost = file(req.input);
-}
-
-// The result of a request that failed before it was sent. With a `url` (a file inside the
-// preopens that the file system refuses, e.g. under a regular file) as `perform`'s when it
-// can't open the file; else a refused request: code 2, no URL.
-export function failed(err) {
-  const message = String(err?.message ?? err);
-  return err?.url === undefined ? { code: 2, message, url: '', status: 0, headers: [] }
-                                : { code: curlCode(err), message, url: err.url, status: 0, statusLine: '', headers: [] };
-}
-
 // Perform one request (`req` of parseRequest, with `outputHost`/`inputHost` mapped): the result
 // for formatResult.
 export async function perform(req, { fetchImpl = globalThis.fetch } = {}) {
@@ -52,4 +31,25 @@ export async function perform(req, { fetchImpl = globalThis.fetch } = {}) {
     const msg = err?.cause?.message ? `${err.message}: ${err.cause.message}` : String(err?.message ?? err);
     return { code: curlCode(err), message: msg, url: req.url, status: 0, statusLine: '', headers: [] };
   }
+}
+
+// The host paths of a request's files (`map` of makeMapper): `outputHost`, `inputHost`. Before
+// the request is sent, and so one whose file can't be had is not sent: as Downloads natively,
+// which opens its output before libcurl gets the request. Throws: a path outside the preopens
+// refuses the request; any other error is the file's, and carries the request's `url`.
+export function mapFiles(req, map) {
+  const file = (g) => {
+    try { return g ? map.toHost(g) : ''; } catch (err) { throw err?.outside ? err : Object.assign(err, { url: req.url }); }
+  };
+  req.outputHost = file(req.output);
+  req.inputHost = file(req.input);
+}
+
+// The result of a request that failed before it was sent. With a `url` (a file inside the
+// preopens that the file system refuses, e.g. under a regular file) as `perform`'s when it
+// can't open the file; else a refused request: code 2, no URL.
+export function failed(err) {
+  const message = String(err?.message ?? err);
+  return err?.url === undefined ? { code: 2, message, url: '', status: 0, headers: [] }
+                                : { code: curlCode(err), message, url: err.url, status: 0, statusLine: '', headers: [] };
 }
