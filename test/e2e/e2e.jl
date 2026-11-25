@@ -15,7 +15,7 @@
 #   run's (pnative.jl). Then for JavaScript (`host = :js`, sending only).
 #
 # Environment: JULIA (default: this julia), WASM_RUNTIME (node, the default, or bun), NODE (default: `node` on PATH,
-# Node 24.21+, which has JSPI and exnref without a flag) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
+# Node 24.20+, which has JSPI and exnref without a flag) or BUN (default: `bun` on PATH), WASMBUILDER / IRSTRUCTURIZER (paths, optional: otherwise WasmCodegen's own
 # [sources]), E2E_REUSE=1 (run modules an earlier run built, without rebuilding them),
 # E2E_ARTIFACTS (a directory with ARTIFACT.tar.gz and ARTIFACT.tar.zst, instead of downloading
 # them from pkg.julialang.org).
@@ -35,7 +35,7 @@ julia = get(ENV, "JULIA", joinpath(Sys.BINDIR, Base.julia_exename()))
 runtime = get(ENV, "WASM_RUNTIME", "node")
 runtime in ("node", "bun") || error("WASM_RUNTIME must be node or bun, not $(repr(runtime))")
 node = something(get(ENV, uppercase(runtime), nothing), Sys.which(runtime), Some(nothing))
-node === nothing && error("$runtime is not on PATH: install it (Node 24.21+ or Bun) or set $(uppercase(runtime)) to its path")
+node === nothing && error("$runtime is not on PATH: install it (Node 24.20+ or Bun) or set $(uppercase(runtime)) to its path")
 work = mkpath(joinpath(HERE, "work"))
 
 # a real artifact (Bzip2_jll's binaries for aarch64-linux-gnu; any artifact works): its tree hash
@@ -63,27 +63,27 @@ end
 
 lines(s, prefix) = filter(l -> startswith(l, prefix), split(s, '\n'))
 
-# a run the runner skipped (an engine gap it names: `SKIP: …`), reported as such; with E2E_ALLOW_SKIP=0, a failure
-# (the caller's: `ok &= ALLOW_SKIP`)
+# a run the runner skipped (an engine gap it names, `SKIP: …`, and exit code 77: the line without the code is a
+# runner that failed), reported as such; with E2E_ALLOW_SKIP=0, a failure (the caller's: `ok &= ALLOW_SKIP`)
 const ALLOW_SKIP = get(ENV, "E2E_ALLOW_SKIP", "1") == "1"
-function skipped(out, what)
+function skipped(out, code, what)
     m = match(r"^SKIP: (.*)$"m, out)
-    m === nothing && return false
+    (m === nothing || code != 77) && return false
     println("== $what: SKIPPED on $runtime, an engine gap: ", m[1], ALLOW_SKIP ? "" : " (a failure: E2E_ALLOW_SKIP=0)")
     return true
 end
 
-# the output of `cmd`, stdout and stderr together, and whether it exited with 0
+# the output of `cmd`, stdout and stderr together, and its exit code (-1 if a signal ended it)
 function output(cmd)
     p = Pipe()
     proc = run(pipeline(ignorestatus(cmd); stdout = p, stderr = p); wait = false)
     close(p.in)
     out = read(p, String)
     wait(proc)
-    return out, success(proc)
+    return out, proc.termsignal == 0 ? proc.exitcode : -1
 end
 
-# (JSPI needs no flag: it is on by default in Node 24.21+, and Node 26 rejects --experimental-wasm-jspi as a "bad option")
+# (JSPI needs no flag: it is on by default in Node 24.20+, and Node 26 rejects --experimental-wasm-jspi as a "bad option")
 const NODE_FLAGS = runtime == "node" ? `--disable-warning=ExperimentalWarning` : ``
 
 function build(env, wasm, transport, program)
@@ -92,17 +92,20 @@ function build(env, wasm, transport, program)
 end
 
 function downloads(env, transport)
+    # (`read` throws if the native run failed: native.mjs exits with the Julia process's code)
     native = read(addenv(`$node $(joinpath(HERE, "native.mjs")) $(joinpath(work, "native"))`,
                          "JULIA" => julia, "E2E_PROJECT" => env), String)
     print("native:\n", native)
-    ok = !isempty(lines(native, "T"))
+    # the downloaded file's size and digest, as native.mjs and run.mjs print them
+    blob(s) = (m = match(r"^blob\.bin: \d+ bytes, sha256 [0-9a-f]{64}"m, s); m === nothing ? nothing : m.match)
+    ok = !isempty(lines(native, "T")) && blob(native) !== nothing
     wasm = joinpath(work, "fetch-$transport.wasm")
     build(env, wasm, transport, "fetch")
     for mode in (transport == "import" ? ["import"] : ["jspi", "sync"])
-        out, exited = output(`$node $NODE_FLAGS $(joinpath(HERE, "run.mjs")) $wasm $mode $(joinpath(work, mode))`)
-        skipped(out, "$transport/$mode") && (ok &= ALLOW_SKIP; continue)
-        same = exited && lines(out, "T") == lines(native, "T") && occursin("identical to the server's: true", out) &&
-               occursin("spool files left: 0", out)
+        out, code = output(`$node $NODE_FLAGS $(joinpath(HERE, "run.mjs")) $wasm $mode $(joinpath(work, mode))`)
+        skipped(out, code, "$transport/$mode") && (ok &= ALLOW_SKIP; continue)
+        same = code == 0 && lines(out, "T") == lines(native, "T") && blob(out) == blob(native) &&
+               occursin("identical to the server's: true", out) && occursin("spool files left: 0", out)
         println("== $transport/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
         ok &= same
     end
@@ -149,10 +152,10 @@ function decompression(env)
     build(env, wasm, "spool", "decompress")
     for mode in ["jspi", "sync"]
         dir = joinpath(work, "d-$mode")
-        out, exited = output(addenv(`$node $NODE_FLAGS $(joinpath(HERE, "drun.mjs")) $wasm $mode $dir $indir`, "E2E_PLATFORM" => platform))
-        skipped(out, "decompress/$mode") && (ok &= ALLOW_SKIP; continue)
+        out, code = output(addenv(`$node $NODE_FLAGS $(joinpath(HERE, "drun.mjs")) $wasm $mode $dir $indir`, "E2E_PLATFORM" => platform))
+        skipped(out, code, "decompress/$mode") && (ok &= ALLOW_SKIP; continue)
         bytes = [f => (isfile(joinpath(dir, "out", f)) && read(joinpath(dir, "out", f)) == ref) for f in ("gz.tar", "zst.tar", "zz.tar", "gz2.tar")]
-        same = exited && lines(out, "D") == want && all(last, bytes) && lines(out, "P") == lines(pnative, "P") &&
+        same = code == 0 && lines(out, "D") == want && all(last, bytes) && lines(out, "P") == lines(pnative, "P") &&
                occursin("spool files left: 0", out)
         println("== decompress/$mode: ", same ? "IDENTICAL to native" : "DIFFERENT", "; bytes equal to native: ", bytes, "\n", out)
         ok &= same
@@ -162,15 +165,15 @@ end
 
 # page messages: for WASI, then for JavaScript (sending only)
 function page(env)
-    native, exited = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl"))`)
+    native, code = output(`$julia --startup-file=no --project=$env $(joinpath(HERE, "pnative.jl"))`)
     print("native:\n", native)
     want(prefix) = lines(native, prefix)
-    ok = exited && occursin("page check: true", native)
+    ok = code == 0 && occursin("page check: true", native)
     for host in ("wasi", "js")
         wasm = joinpath(work, "page-$host.wasm")
         build(env, wasm, host, "page")
-        out, exited = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)
-        same = exited && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
+        out, code = output(`$node $(joinpath(HERE, "prun.mjs")) $wasm $host $(joinpath(wcg, "js", "julia.mjs"))`)
+        same = code == 0 && occursin("page check: true", out) && lines(out, "S") == want("S") && lines(out, "U") == want("U") &&
                (host == "js" || lines(out, "R") == want("R"))
         println("== page/$host: ", same ? "IDENTICAL to native" : "DIFFERENT", "\n", out)
         ok &= same
