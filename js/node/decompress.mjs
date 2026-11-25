@@ -24,7 +24,10 @@ function stage(format) {
 // Decompress the host file `srcHost` into `dstHost`: [errno, message], [0, ''] when done. A
 // failure removes `dstHost` only once this call has opened it for writing: before that (no
 // source, not the format's data, a destination that can't be opened, or that is the source
-// itself, by another name too: EINVAL) a file of that name is left as it is.
+// itself, by another name too: EINVAL) a file of that name is left as it is. And only if the
+// name is still that file's: one renamed away meanwhile keeps its new name, and the file that
+// took the old one stays. (Checked, then removed, by name: a rename between the two is not
+// seen.)
 export async function decompressFile(srcHost, dstHost, format = 'auto') {
   let head;
   try {
@@ -42,13 +45,16 @@ export async function decompressFile(srcHost, dstHost, format = 'auto') {
   const c = chooseFormat(format, head);
   if (c.errno !== undefined) return [c.errno, c.message];
   if (c.format === 'zstd' && !hasZstd) return [ERRNO.ENOSYS, `zstd: this Node (${process.version}) has no zlib.createZstdDecompress`];
-  let out;
-  try { out = fs.openSync(dstHost, 'w'); } catch (err) { return [errnoOf(err), `${c.format}: ${String(err?.message ?? err)}`]; }
+  // (the stream opens the destination, off this thread: a FIFO waits there for its reader)
+  const out = fs.createWriteStream(dstHost);
+  let opened;   // the file opened, by device and inode
+  out.once('open', (fd) => { try { opened = fs.fstatSync(fd, { bigint: true }); } catch {} });
   try {
-    await pipeline(fs.createReadStream(srcHost), stage(c.format), fs.createWriteStream(dstHost, { fd: out }));
+    await pipeline(fs.createReadStream(srcHost), stage(c.format), out);
     return [0, ''];
   } catch (err) {
-    fs.rmSync(dstHost, { force: true });
+    const now = opened && fs.statSync(dstHost, { bigint: true, throwIfNoEntry: false });
+    if (now && now.dev === opened.dev && now.ino === opened.ino) fs.rmSync(dstHost, { force: true });
     return [errnoOf(err), `${c.format}: ${String(err?.message ?? err)}`];
   }
 }

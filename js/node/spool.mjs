@@ -24,7 +24,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseRequest, formatResult } from '../common/fetch.mjs';
+import { parseRequest, formatResult, curlCode } from '../common/fetch.mjs';
 import { parseDecompressRequest, formatDecompressAnswer } from '../common/decompress.mjs';
 import { makeMapper, guestDir } from './paths.mjs';
 import { perform } from './http.mjs';
@@ -37,11 +37,15 @@ const KINDS = [
   { kind: 'decompress', res: '.dres', req: '.dreq' },
 ];
 
-// The answer for a job that failed before it ran
+// The answer for a job that failed before it ran. A download whose file can't be had (`url`
+// set: a path inside the preopens that the file system refuses, e.g. under a regular file)
+// fails as the request itself does when it can't open the file.
 function failure(kind, err) {
-  return kind === 'fetch'
-    ? formatResult({ code: 2, message: String(err?.message ?? err), url: '', status: 0, headers: [] })
-    : formatDecompressAnswer(errnoOf(err), String(err?.message ?? err));
+  const message = String(err?.message ?? err);
+  if (kind !== 'fetch') return formatDecompressAnswer(errnoOf(err), message);
+  return err?.url === undefined
+    ? formatResult({ code: 2, message, url: '', status: 0, headers: [] })
+    : formatResult({ code: curlCode(err), message, url: err.url, status: 0, headers: [] });
 }
 
 // Do one job (host paths mapped) and write its response file. Throws only if that file can't be
@@ -66,7 +70,8 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
   const map = makeMapper(preopens);
   // (without a trailing slash, as the mapper's preopens: compared with the `dirname` of the paths opened)
   const spoolGuest = guestDir(spool);
-  fs.mkdirSync(map.toHost(spoolGuest), { recursive: true });
+  // (resolved as the directory it is for the files opened in it: a link to one is followed)
+  fs.mkdirSync(map.toHost(spoolGuest + '/'), { recursive: true });
   let memory = null;
   const decoder = new TextDecoder();
   const original = wasiImport.path_open;
@@ -96,8 +101,12 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
     const text = fs.readFileSync(p.reqHost, 'utf8');
     if (p.kind === 'fetch') {
       const req = parseRequest(text);
-      req.outputHost = req.output ? map.toHost(req.output) : '';
-      req.inputHost = req.input ? map.toHost(req.input) : '';
+      // (a path outside the preopens refuses the request; any other error is the file's)
+      const file = (g) => {
+        try { return g ? map.toHost(g) : ''; } catch (err) { throw err?.outside ? err : Object.assign(err, { url: req.url }); }
+      };
+      req.outputHost = file(req.output);
+      req.inputHost = file(req.input);
       stats.requests++;
       return { kind: 'fetch', req, resHost: p.resHost };
     }

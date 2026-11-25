@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const fail = (code, message) => Object.assign(new Error(`wasmhost: ${message}`), { code });
+// (`outside`: refused for where it leads, not for what the file system said of it)
+const outside = (guest, how = '') => Object.assign(fail('EACCES', `${guest} is outside the preopens${how}`), { outside: true });
 const within = (p, dir, sep) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 
 // uvwasi's limit (UVWASI__MAX_SYMLINK_FOLLOWS)
@@ -16,10 +18,13 @@ const realpath = fs.realpathSync.native;
 // The host path `p` (absolute; its last component not a link, unless a slash follows it) with
 // the links on the way followed, by the kernel (`realpath`; its errors are the answer). Names
 // after the last directory that exists stay as they are (a file or directories to be made),
-// the trailing slash too: the kernel doesn't make a regular file of `name/`.
+// the trailing slash too: the kernel doesn't make a regular file of `name/`. (The host's
+// separator only: on POSIX a `\` is a character of a name.)
 function physical(p) {
   const names = [];
-  for (let dir = p.replace(/(?<=[^\\/])[\\/]+$/, ''); ; dir = path.dirname(dir)) {
+  let dir = p;
+  while (dir.endsWith(path.sep) && path.dirname(dir) !== dir) dir = dir.slice(0, -1);
+  for (; ; dir = path.dirname(dir)) {
     try {
       const real = path.join(realpath(dir), ...names);
       return names.length > 0 && p.endsWith(path.sep) ? real + path.sep : real;
@@ -61,11 +66,11 @@ export function makeMapper(preopens) {
       let best = null;
       for (const entry of entries)
         if (within(g, entry[0], '/') && (!best || entry[0].length > best[0].length)) best = entry;
-      if (!best) throw fail('EACCES', `${guest} is outside the preopens`);
+      if (!best) throw outside(guest);
       const [gp, root] = best;
       let host;
       for (let follows = 0; ;) {
-        if (!within(g, gp, '/')) throw fail('EACCES', `${guest} is outside the preopens (through a symbolic link)`);
+        if (!within(g, gp, '/')) throw outside(guest, ' (through a symbolic link)');
         // (the rest of `g` as it is: a trailing slash counts)
         host = path.join(root, g.slice(gp.length));
         let target;
@@ -78,7 +83,7 @@ export function makeMapper(preopens) {
         g = path.posix.normalize(target.startsWith('/') ? target : `${g}/../${target}`);
       }
       const real = physical(host);
-      if (!within(real, root, path.sep)) throw fail('EACCES', `${guest} is outside the preopens (through a symbolic link)`);
+      if (!within(real, root, path.sep)) throw outside(guest, ' (through a symbolic link)');
       return real;
     },
   };

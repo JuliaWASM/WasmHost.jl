@@ -234,7 +234,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         else
             script = """
             import fs from 'node:fs'; import path from 'node:path'; import { WASI } from 'node:wasi';
-            import { makeMapper } from $(js("node", "paths.mjs"));
+            import { makeMapper } from $(js("node", "paths.mjs")); import { wasiInitialize } from $(js("node", "wasi.mjs"));
             const dir = fs.realpathSync(process.argv.at(-1)), box = path.join(dir, 'box'), out = path.join(dir, 'outside');
             fs.mkdirSync(path.join(box, 'sub', 'deep'), { recursive: true }); fs.mkdirSync(out);
             fs.writeFileSync(path.join(out, 'secret'), 's');
@@ -259,11 +259,15 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             fs.symlinkSync('/work/file', path.join(box, 'guestabs'));
             const paths = ['', 'a/b', 'inside/x', 'dir/x', 'dir/secret', 'dangling', 'relative', '../x', 'loop',
                            'alias/file', 'alias/../file', 'absent/../file', 'updown', 'viaalias', 'alias/up',
-                           'slash', 'file/x', 'file/', 'file', 'tofresh', 'fresh/', 'gone/', 'gone/y', 'hostabs', 'guestabs'];
+                           'slash', 'file/x', 'file/', 'file', 'tofresh', 'fresh/', 'gone/', 'gone/y', 'hostabs', 'guestabs',
+                           // (a `\\` is no separator of a guest path, nor of a POSIX host's: a name's last character)
+                           process.platform === 'win32' ? 'file' : 'file\\\\'];
             // (a preopen named with a trailing slash, and a relative host directory; then one through a link and a `..`)
             process.chdir(dir);
             const r = [];
             for (const [pre, wasi] of [['box', false], ['box', true], ['box/alias/..', true]]) {
+              // (the comparison is with Node's WASI, uvwasi: Bun has its own)
+              if (wasi && typeof Bun !== 'undefined') continue;
               const preopens = { '/work/': pre };
               const map = makeMapper(preopens);
               if (!wasi) {
@@ -282,7 +286,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
               const w = new WASI({ version: 'preview1', preopens, returnOnExit: true });
               const inst = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(
                 [0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 3, 1, 0, 1, 7, 10, 1, 6, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 2, 0])), {});
-              w.initialize(inst);
+              wasiInitialize(w, inst);
               const mem = new Uint8Array(inst.exports.memory.buffer), view = new DataView(inst.exports.memory.buffer);
               const errno = { ELOOP: 32, ENOENT: 44, ENOTDIR: 54, EACCES: 76 };   // (76: ENOTCAPABLE)
               const differ = [];
@@ -300,12 +304,18 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             """
             quiet = runtime == "node" ? `--disable-warning=ExperimentalWarning` : ``
             r = read(`$node --input-type=module $quiet -e $script $(mktempdir())`, String)
-            @test startswith(r, "/work box box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP " *
-                                "box/sub/deep/file box/file box/file box/file box/file box/file " *
-                                "ENOTDIR ENOTDIR ENOTDIR box/file box/fresh/ box/fresh/ ENOENT ENOENT EACCES box/file [")
+            mapped = "/work box box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP " *
+                     "box/sub/deep/file box/file box/file box/file box/file box/file " *
+                     "ENOTDIR ENOTDIR ENOTDIR box/file box/fresh/ box/fresh/ ENOENT ENOENT EACCES box/file " *
+                     (Sys.iswindows() ? "box/file" : "box/file\\")
             # the paths that node:wasi takes elsewhere: those through `dir` only (it follows a link in a directory to
-            # the outside; the adapter doesn't). (Node's WASI, uvwasi: another runtime's may differ.)
-            runtime == "node" && @test endswith(r, " [dir/x,dir/secret] []")
+            # the outside; the adapter doesn't)
+            if runtime == "node"
+                @test r == mapped * " [dir/x,dir/secret] []"
+            else
+                @test r == mapped
+                @test_skip "the comparison with node:wasi (uvwasi): not on $runtime, whose WASI is its own"
+            end
         end
     end
 
@@ -316,7 +326,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         else
             prelude = """
             import fs from 'node:fs'; import path from 'node:path'; import zlib from 'node:zlib';
-            import { wrapWasi } from $(js("node", "spool.mjs"));
+            import { wrapWasi, decompressFile } from $(js("node", "spool.mjs"));
             const dir = fs.realpathSync(process.argv.at(-1)), box = path.join(dir, 'box'), spool = path.join(box, '.wasmhost');
             fs.mkdirSync(box);
             const memory = new WebAssembly.Memory({ initial: 1 });
@@ -359,10 +369,16 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             // a spool that is itself a preopen, both named with a trailing slash
             fs.mkdirSync(path.join(dir, 'spool'));
             wrapWasi({ path_open: () => 0 }, { preopens: { '/spool/': path.join(dir, 'spool') }, spool: '/spool/', mode: 'sync' });
+            // a spool that is a link to a directory of the preopen, as the files opened in it take it
+            fs.mkdirSync(path.join(box, 'real')); fs.symlinkSync(path.join(box, 'real'), path.join(box, 'linked'));
+            wrapWasi({ path_open: () => 0 }, { preopens: { '/work': box }, spool: '/work/linked/', mode: 'sync' });
+            // (to one outside it: refused)
+            fs.symlinkSync(dir, path.join(box, 'away'));
+            try { wrapWasi({ path_open: () => 0 }, { preopens: { '/work': box }, spool: '/work/away', mode: 'sync' }); r.push('made'); } catch (e) { r.push(e.code); }
             process.stdout.write(r.join(' '));
             """
             r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
-            @test startswith(r, "0 hello 28 28 28 hello none false 4 44 old ") && endswith(r, " 29 removed true false")
+            @test startswith(r, "0 hello 28 28 28 hello none false 4 44 old ") && endswith(r, " 29 removed true false EACCES")
             if occursin(" root ", r)
                 @test_skip "root opens a read-only file"
             else
@@ -375,13 +391,31 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             fs.symlinkSync('../nowhere/res', path.join(spool, '1.dres')); fs.symlinkSync('../nowhere/res', path.join(spool, '2.dres'));
             const r = [ask(1, 'a.gz', 'a'), host.stats.decompress, fs.readFileSync(path.join(box, 'a'), 'utf8')];
             try { r.push(ask(2, 'a.gz/child', 'b')); } catch (e) { r.push('thrown: ' + e.code); }
+            // a download into a file that can't be (under a regular file) fails as a request does, with its URL; one
+            // to a file outside the preopens is refused (code 2, no URL)
+            for (const [id, output] of [[3, '/work/a.gz/child'], [4, '/elsewhere/x']]) {
+              fs.writeFileSync(path.join(spool, id + '.req'), ['wasm-fetch 1', 'GET', 'data:text/plain,fixture', output, '', 'inf', ''].join('\\n'));
+              const rel = new TextEncoder().encode('.wasmhost/' + id + '.res');
+              new Uint8Array(memory.buffer).set(rel, 64);
+              host.wasiImport.path_open(3, 0, 64, rel.length, 0, 0n, 0n, 0, 0);
+              const res = fs.readFileSync(path.join(spool, id + '.res'), 'utf8').split('\\n');
+              r.push(res[1] + '<' + res[3] + '>');
+            }
+            // a destination that is a FIFO: opening it waits for the reader without holding this thread
+            if (process.platform !== 'win32') {
+              const { execFileSync } = await import('node:child_process');
+              const pipe = path.join(box, 'pipe');
+              execFileSync('mkfifo', [pipe]);
+              const read = new Promise((done) => setTimeout(() => { let s = ''; fs.createReadStream(pipe).on('data', (d) => { s += d; }).on('end', () => done(s)); }, 50));
+              r.push((await decompressFile(path.join(box, 'a.gz'), pipe))[0], await read);
+            } else r.push(0, 'hello');
             fs.writeFileSync(path.join(dir, 'returned'), r.join(' '));
             """
             dir = mktempdir()
             p = run(`$node --input-type=module -e $script $dir`; wait = false)
             timedwait(() -> process_exited(p), 60.0) === :ok || kill(p, Base.SIGKILL)
             wait(p)
-            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello none"
+            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello none 56<data:text/plain,fixture> 2<> 0 hello"
         end
     end
 
