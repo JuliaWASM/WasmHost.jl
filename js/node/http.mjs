@@ -35,7 +35,7 @@ export async function perform(req, { fetchImpl = globalThis.fetch } = {}) {
 
 // The host paths of a request's files (`map` of makeMapper): `outputHost`, `inputHost`. Before
 // the request is sent, and so one whose path can't be mapped is not sent: as Downloads natively,
-// which opens its output before libcurl gets the request. (A path that maps and then can't be
+// which opens its output before libcurl gets the request. (An output that maps and then can't be
 // opened, a directory, fails in `perform`, after the request.) Throws: a path outside the preopens
 // refuses the request; any other error is the file's, and carries the request's `url`.
 export function mapFiles(req, map) {
