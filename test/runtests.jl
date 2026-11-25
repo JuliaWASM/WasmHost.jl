@@ -230,14 +230,23 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             fs.symlinkSync('../outside/secret', path.join(box, 'relative'));
             fs.symlinkSync('sub', path.join(box, 'inside'));
             fs.symlinkSync('loop', path.join(box, 'loop'));
-            const map = makeMapper({ '/work': path.join(dir, 'box') });
-            const r = [];
-            for (const g of ['/work/a/b', '/work/inside/x', '/work/dir/x', '/work/dir/secret', '/work/dangling', '/work/relative', '/work/../x', '/work/loop'])
-              try { r.push(path.relative(dir, map.toHost(g))); } catch (e) { r.push(e.code); }
+            // as the kernel: a `..` after a name that doesn't exist, a name (or a slash) after a file
+            fs.writeFileSync(path.join(box, 'file'), 'f');
+            fs.symlinkSync('absent/../file', path.join(box, 'updown'));
+            fs.symlinkSync('file/', path.join(box, 'slash'));
+            // (a preopen named with a trailing slash, and a relative host directory)
+            process.chdir(dir);
+            const map = makeMapper({ '/work/': 'box' });
+            // (the preopen is the directory it was when the mapper was made)
+            process.chdir(out);
+            const r = [map.preopenOf(3)];
+            for (const g of ['/work', '/work/a/b', '/work/inside/x', '/work/dir/x', '/work/dir/secret', '/work/dangling', '/work/relative', '/work/../x', '/work/loop',
+                             '/work/updown', '/work/slash', '/work/file/x', '/work/file/', '/work/file'])
+              try { r.push(path.relative(dir, map.toHost(g)).split(path.sep).join('/')); } catch (e) { r.push(e.code); }
             process.stdout.write(r.join(' '));
             """
             r = read(`$node --input-type=module -e $script $(mktempdir())`, String)
-            @test r == "box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP"
+            @test r == "/work box box/a/b box/sub/x EACCES EACCES EACCES EACCES EACCES ELOOP ENOENT ENOTDIR ENOTDIR ENOTDIR box/file"
         end
     end
 

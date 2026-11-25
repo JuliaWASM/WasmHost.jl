@@ -17,14 +17,16 @@
 //   - 'jspi': `path_open` is a `WebAssembly.Suspending`: the module waits with its stack
 //     suspended; exports that download or decompress must be called through
 //     `WebAssembly.promising` (Node 24+ and Bun have it on by default).
-//   - 'sync': the work runs on a worker thread while the main thread blocks in `Atomics.wait`.
+//   - 'sync': the work runs on a worker thread while the main thread blocks in `Atomics.wait`,
+//     without a timeout: a worker that dies before it takes a job (e.g. a `--require` preload
+//     that fails in it) can't be told from one still working, and the module then hangs.
 // `fetchImpl` replaces `fetch` (jspi mode only; e.g. to refuse all requests).
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseRequest, formatResult } from '../common/fetch.mjs';
 import { parseDecompressRequest, formatDecompressAnswer } from '../common/decompress.mjs';
-import { makeMapper } from './paths.mjs';
+import { makeMapper, guestDir } from './paths.mjs';
 import { perform } from './http.mjs';
 import { decompressFile, errnoOf } from './decompress.mjs';
 
@@ -62,8 +64,8 @@ export async function serve(job, { fetchImpl } = {}) {
 export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetchImpl } = {}) {
   if (!spool) throw new Error('wasmhost: no spool directory');
   const map = makeMapper(preopens);
-  // (without a trailing slash: compared with the `dirname` of the paths opened)
-  const spoolGuest = path.posix.normalize(spool).replace(/(?<=.)\/$/, '');
+  // (without a trailing slash, as the mapper's preopens: compared with the `dirname` of the paths opened)
+  const spoolGuest = guestDir(spool);
   fs.mkdirSync(map.toHost(spoolGuest), { recursive: true });
   let memory = null;
   const decoder = new TextDecoder();
