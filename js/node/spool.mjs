@@ -24,10 +24,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseRequest, formatResult, curlCode } from '../common/fetch.mjs';
+import { parseRequest, formatResult } from '../common/fetch.mjs';
 import { parseDecompressRequest, formatDecompressAnswer } from '../common/decompress.mjs';
 import { makeMapper, guestDir } from './paths.mjs';
-import { perform } from './http.mjs';
+import { perform, mapFiles, failed } from './http.mjs';
 import { decompressFile, errnoOf } from './decompress.mjs';
 
 export { makeMapper, perform, decompressFile };
@@ -37,15 +37,9 @@ const KINDS = [
   { kind: 'decompress', res: '.dres', req: '.dreq' },
 ];
 
-// The answer for a job that failed before it ran. A download whose file can't be had (`url`
-// set: a path inside the preopens that the file system refuses, e.g. under a regular file)
-// fails as the request itself does when it can't open the file.
+// The answer for a job that failed before it ran
 function failure(kind, err) {
-  const message = String(err?.message ?? err);
-  if (kind !== 'fetch') return formatDecompressAnswer(errnoOf(err), message);
-  return err?.url === undefined
-    ? formatResult({ code: 2, message, url: '', status: 0, headers: [] })
-    : formatResult({ code: curlCode(err), message, url: err.url, status: 0, headers: [] });
+  return kind === 'fetch' ? formatResult(failed(err)) : formatDecompressAnswer(errnoOf(err), String(err?.message ?? err));
 }
 
 // Do one job (host paths mapped) and write its response file. Throws only if that file can't be
@@ -101,12 +95,7 @@ export function wrapWasi(wasiImport, { preopens = {}, spool, mode = 'jspi', fetc
     const text = fs.readFileSync(p.reqHost, 'utf8');
     if (p.kind === 'fetch') {
       const req = parseRequest(text);
-      // (a path outside the preopens refuses the request; any other error is the file's)
-      const file = (g) => {
-        try { return g ? map.toHost(g) : ''; } catch (err) { throw err?.outside ? err : Object.assign(err, { url: req.url }); }
-      };
-      req.outputHost = file(req.output);
-      req.inputHost = file(req.input);
+      mapFiles(req, map);
       stats.requests++;
       return { kind: 'fetch', req, resHost: p.resHost };
     }

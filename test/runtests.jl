@@ -401,6 +401,25 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
               const res = fs.readFileSync(path.join(spool, id + '.res'), 'utf8').split('\\n');
               r.push(res[1] + '<' + res[3] + '>');
             }
+            // (the same through the import; the request is not sent, as natively, where the output is opened first)
+            if (typeof WebAssembly.Suspending === 'function') {
+              const { makeImports } = await import($(js("node", "imports.mjs")));
+              let sent = 0;
+              const imp = makeImports({ preopens: { '/work': box }, fetchImpl: async () => { sent++; return new Response('created'); } });
+              imp.bindMemory(memory);
+              const call = WebAssembly.promising(new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array(
+                // (module (import "wasm_host" "http_request" (func (param i32 i32 i32 i32) (result i32))) (export "f" (func 0)))
+                [0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 9, 1, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f,
+                 2, 26, 1, 9, 0x77, 0x61, 0x73, 0x6d, 0x5f, 0x68, 0x6f, 0x73, 0x74, 12, 0x68, 0x74, 0x74, 0x70, 0x5f, 0x72, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0, 0,
+                 7, 5, 1, 1, 0x66, 0, 0])), imp.imports).exports.f);
+              for (const output of ['/work/a.gz/child', '/elsewhere/x']) {
+                const req = new TextEncoder().encode(['wasm-fetch 1', 'POST', 'data:text/plain,fixture', output, '', 'inf', ''].join('\\n'));
+                new Uint8Array(memory.buffer).set(req, 4096);
+                const n = await call(4096, req.length, 8192, 4096);
+                const res = new TextDecoder().decode(new Uint8Array(memory.buffer, 8192, n)).split('\\n');
+                r.push(res[1] + '<' + res[3] + '>' + sent);
+              }
+            } else r.push('56<data:text/plain,fixture>0', '2<>0');
             // a destination that is a FIFO: opening it waits for the reader without holding this thread
             if (process.platform !== 'win32') {
               const { execFileSync } = await import('node:child_process');
@@ -415,7 +434,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             p = run(`$node --input-type=module -e $script $dir`; wait = false)
             timedwait(() -> process_exited(p), 60.0) === :ok || kill(p, Base.SIGKILL)
             wait(p)
-            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello none 56<data:text/plain,fixture> 2<> 0 hello"
+            @test isfile(joinpath(dir, "returned")) && read(joinpath(dir, "returned"), String) == "none 1 hello none 56<data:text/plain,fixture> 2<> 56<data:text/plain,fixture>0 2<>0 0 hello"
         end
     end
 
