@@ -4,7 +4,7 @@
 # test/e2e/e2e.jl.
 using Test, WasmHost
 using WasmHost: split_lines, spool_dir
-using WasmHost.Downloads: request_text, parse_result, Result, timeout_ms, header_pairs
+using WasmHost.Downloads: request_text, request_text_ms, parse_result, Result, timeout_ms, header_pairs
 using WasmHost.Decompress: DecompressError, decompress, parse_answer
 using Base.BinaryPlatforms: HostPlatform, triplet, arch, os, libc
 
@@ -35,11 +35,20 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     end
 
     @testset "Downloads: request text" begin
-        t = request_text("http://h/x", "GET", ["Accept" => "*/*", "X-A" => "b c"], "", "/w/out.bin", 0)
+        t = request_text_ms("http://h/x", "GET", ["Accept" => "*/*", "X-A" => "b c"], "", "/w/out.bin", 0)
         @test t == "wasm-fetch 1\nGET\nhttp://h/x\n/w/out.bin\n\ninf\nAccept: */*\nX-A: b c\n"
-        @test split(request_text("u", "PUT", Pair{String,String}[], "/w/in", "", 2500), '\n')[5:6] == ["/w/in", "2.5"]
-        @test_throws ArgumentError request_text("http://h/\nx", "GET", Pair{String,String}[], "", "", 0)
-        @test_throws ArgumentError request_text("u", "GET", ["X" => "a\r\nY: b"], "", "", 0)
+        @test split(request_text_ms("u", "PUT", Pair{String,String}[], "/w/in", "", 2500), '\n')[5:6] == ["/w/in", "2.5"]
+        # the timeout of `request_text` and `request` is in seconds
+        tline(t) = split(request_text("u", "GET", Pair{String,String}[], "", "", t), '\n')[6]
+        @test (tline(Inf), tline(2.5), tline(3), tline(1//4), tline(0.0004)) == ("inf", "2.5", "3.0", "0.25", "inf")
+        @test_throws ArgumentError("timeout must be positive, got 0.0") tline(0.0)
+        withenv("WASMHOST_SPOOL" => nothing) do
+            for t in (Inf, 2.5, 3)
+                @test WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", t).code == 2
+            end
+        end
+        @test_throws ArgumentError request_text_ms("http://h/\nx", "GET", Pair{String,String}[], "", "", 0)
+        @test_throws ArgumentError request_text_ms("u", "GET", ["X" => "a\r\nY: b"], "", "", 0)
     end
 
     # the `timeout` and `headers` keywords as the native `Downloads.request` takes them
@@ -88,13 +97,13 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
     @testset "Downloads: without a host" begin
         # no spool directory: a failure of the request (code 2), not an exception
         withenv(NOSPOOL...) do
-            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", 0)
+            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", Inf)
             @test r.code == 2 && occursin("WASMHOST_SPOOL", r.message)
         end
         # a spool directory but no adapter answering it: code 2, and nothing left behind
         dir = mktempdir()
         withenv("WASMHOST_SPOOL" => dir) do
-            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", 0)
+            r = WasmHost.Downloads.request("http://h/x", "GET", Pair{String,String}[], "", "", Inf)
             @test r.code == 2 && occursin("no response", r.message)
         end
         @test isempty(readdir(dir))
@@ -169,7 +178,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
         if node === nothing
             @test_skip "$runtime not found"
         else
-            req = request_text("http://h/x?a=1", "POST", ["X-Probe" => "v: w"], "/w/in", "/w/out", 3000)
+            req = request_text_ms("http://h/x?a=1", "POST", ["X-Probe" => "v: w"], "/w/in", "/w/out", 3000)
             script = """
             import { parseRequest, formatResult } from $(js("common", "fetch.mjs"));
             const req = parseRequest(process.argv.at(-1));
@@ -216,9 +225,9 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             ms = Int64[1:3000; 2147483000 .+ (-3:0); 2147483647; 2147483647 .+ (1:3); 1000 .* (2147484:2147490); 2147483647000;
                        [powermod(7, k, 2147483647) for k in 1:2000]; [1000 * powermod(7, k, 2147483647) for k in 1:500]]
             file = joinpath(mktempdir(), "requests")
-            write(file, join((request_text("http://h/", "GET", Pair{String,String}[], "", "", m) for m in ms), '\0'))
+            write(file, join((request_text_ms("http://h/", "GET", Pair{String,String}[], "", "", m) for m in ms), '\0'))
             @test parse.(Int64, split(read(`$node --input-type=module -e $script2 $file`, String))) == ms
-            reqs = [request_text("http://h/", "GET", Pair{String,String}[], "", "", timeout_ms(t))
+            reqs = [request_text_ms("http://h/", "GET", Pair{String,String}[], "", "", timeout_ms(t))
                     for t in (2.5, 0.3004, 0.0001, 2147483, 1e7, Inf)]
             @test read(`$node --input-type=module -e $script $reqs`, String) == "0t 0t 0n 0t 0n 0n 28 0"
         end
@@ -244,7 +253,7 @@ const NOSPOOL = ("WASMHOST_SPOOL" => nothing, "WASM_FETCH_SPOOL" => nothing)
             """
             hdrs = header_pairs(["Accept" => nothing, "User-Agent" => nothing, "X-A" => nothing, "X-B" => "b"], "julia")
             @test hdrs == ["X-B" => "b"]
-            req = request_text("http://127.0.0.1:PORT/", "GET", hdrs, "", "", 0)
+            req = request_text_ms("http://127.0.0.1:PORT/", "GET", hdrs, "", "", 0)
             @test read(`$node --input-type=module -e $script $req`, String) == "200 */* true false b"
         end
     end

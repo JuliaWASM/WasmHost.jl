@@ -102,7 +102,7 @@ function wasm_request(url::String, input, output, method, headers, timeout_ms::I
     local r::Host.Result
     nbytes = 0
     try
-        r = Host.request(url, meth, hdrs, inp, out, timeout_ms)
+        r = Host.request_ms(url, meth, hdrs, inp, out, timeout_ms)
         r.code == 0 && (nbytes = copy_body!(output, out))
     finally
         in_tmp && rm(inp; force = true)

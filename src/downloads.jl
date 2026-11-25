@@ -35,14 +35,19 @@ field(s::String, what::String) = WasmHost.field(s, PROTOCOL, what)
 no_host(url::String, msg::String) = Result(2, string("wasm-fetch: ", msg), url, 0, "", Pair{String,String}[])
 
 """
-    request_text(url, method, headers, input, output, timeout_ms) -> String
+    request_text(url, method, headers, input, output, timeout) -> String
 
-The text of a request. Throws an `ArgumentError` for a field with a line break. The timeout
-goes in seconds ("inf" for 0, none), the protocol's unit: the host gets the milliseconds back
-by rounding a thousand times that number.
+The text of a request, `timeout` in seconds (`Inf`: none). Throws an `ArgumentError` for a
+field with a line break, and for a timeout that is not positive ([`timeout_ms`](@ref)).
 """
-function request_text(url::String, method::String, headers::Vector{Pair{String,String}},
-                      input::String, output::String, timeout_ms::Int64)::String
+request_text(url::String, method::String, headers::Vector{Pair{String,String}},
+             input::String, output::String, timeout::Real)::String =
+    request_text_ms(url, method, headers, input, output, timeout_ms(timeout))
+
+# The same, the timeout as `timeout_ms` gives it. It goes in seconds ("inf" for 0, none), the
+# protocol's unit: the host gets the milliseconds back by rounding a thousand times that number.
+function request_text_ms(url::String, method::String, headers::Vector{Pair{String,String}},
+                         input::String, output::String, timeout_ms::Int64)::String
     io = IOBuffer()
     println(io, PROTOCOL)
     println(io, field(method, "method"))
@@ -102,16 +107,24 @@ function header_pairs(headers, user_agent::String)::Vector{Pair{String,String}}
 end
 
 """
-    request(url, method, headers, input, output, timeout_ms) -> Result
+    request(url, method, headers, input, output, timeout) -> Result
 
 Perform the request through the host. `input`/`output` are paths of the program's filesystem
-(\"\": none). Never throws for a failure of the request itself: that is `Result.code != 0`
-(code 2 when the host has no fetch).
+(\"\": none), `timeout` is in seconds (`Inf`: none; made the milliseconds libcurl would get by
+[`timeout_ms`](@ref), whose `ArgumentError` for one that is not positive is thrown here).
+Never throws for a failure of the request itself: that is `Result.code != 0` (code 2 when the
+host has no fetch).
 """
-function request(url::String, method::String, headers::Vector{Pair{String,String}},
-                 input::String, output::String, timeout_ms::Int64)::Result
+request(url::String, method::String, headers::Vector{Pair{String,String}},
+        input::String, output::String, timeout::Real)::Result =
+    request_ms(url, method, headers, input, output, timeout_ms(timeout))
+
+# The same, the timeout as `timeout_ms` gave it (the extension has it already: Downloads
+# checks the timeout before it opens the files).
+function request_ms(url::String, method::String, headers::Vector{Pair{String,String}},
+                    input::String, output::String, timeout_ms::Int64)::Result
     isempty(spool_dir()) && return no_host(url, "the host provides no fetch (WASMHOST_SPOOL is not set)")
-    text = request_text(url, method, headers, input, output, timeout_ms)
+    text = request_text_ms(url, method, headers, input, output, timeout_ms)
     res = WasmHost.transport() === :import ? request_import(text) : spool_exchange(text, ".req", ".res")
     res === nothing && return no_host(url, "no response from the host (is its adapter installed?)")
     return parse_result(split_lines(res), url)
